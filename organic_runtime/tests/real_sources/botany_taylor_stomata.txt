@@ -1,0 +1,7 @@
+SOURCE_TITLE: Botany: The Science of Plant Life
+AUTHOR: Norman Taylor
+SOURCE_URL: https://www.gutenberg.org/ebooks/49211
+LICENSE_STATUS: Public domain in the USA (Project Gutenberg)
+ROLE: Cached web stand-in; not ingested until the active learner requests it
+
+With carbon dioxide going in, oxygen, water vapor and even liquid water coming out of the stoma of leaves, it might be surmised that these busy little pores and their guard cells had done work enough for the plant. For this process of photosynthesis and the closely related one of supplying food and water to the leaf cannot go on without respiration, which is quite another thing.

@@ -1,0 +1,7 @@
+SOURCE_TITLE: Plant Life
+AUTHOR: Roscoe W. Thatcher
+SOURCE_URL: https://www.gutenberg.org/ebooks/33394
+LICENSE_STATUS: Public domain in the USA (Project Gutenberg)
+ROLE: Cached web stand-in; not ingested until the active learner requests it
+
+Photosynthesis is the process whereby chlorophyll-containing plants, in the presence of sunlight, synthetize organic compounds from water and carbon dioxide. Oxygen is a by-product of the synthetic process and must be returned to the air by a gas exchange.

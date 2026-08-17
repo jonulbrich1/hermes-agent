@@ -1,0 +1,7 @@
+SOURCE_TITLE: Beginners' Botany
+AUTHOR: L. H. Bailey
+SOURCE_URL: https://www.gutenberg.org/ebooks/73531
+LICENSE_STATUS: Public domain in the USA (Project Gutenberg)
+ROLE: Cached web stand-in; not ingested until the active learner requests it
+
+Transpiration.—Much more water is absorbed by the roots than is used in growth, and this surplus water passes from the leaves into the atmosphere by an evaporation process known as transpiration. Transpiration takes place more abundantly from the under surfaces of leaves, and through the pores or stomates.

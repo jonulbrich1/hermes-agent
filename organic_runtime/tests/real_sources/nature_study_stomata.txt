@@ -1,0 +1,7 @@
+SOURCE_TITLE: An Introduction to Nature Study
+AUTHOR: Ernest Stenhouse
+SOURCE_URL: https://www.gutenberg.org/ebooks/61273
+LICENSE_STATUS: Public domain in the USA (Project Gutenberg)
+ROLE: Cached web stand-in; not ingested until the active learner requests it
+
+The waterproof skin of a leaf is perforated by a multitude of little pores, especially on the lower surface. During the daytime, therefore, the air containing its small proportion of carbon dioxide has free access to the interior of the leaf through the stomata, and, on the other hand, any water which the leaf does not require can escape in the form of vapour.
