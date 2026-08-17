@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import heapq
+import itertools
 import math
 import operator
 from typing import Any, Callable
@@ -149,6 +151,152 @@ def select_grounded_candidates(state: dict[str, Any], task: StructuralTask) -> d
     }
 
 
+def collect_partial_order(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    nodes: set[str] = set()
+    edges: set[tuple[str, str]] = set()
+    for constraint in task.constraints:
+        if constraint.get("kind") != "precedes":
+            raise OperatorError("Unsupported partial-order constraint")
+        before = str(constraint.get("before") or "").strip()
+        after = str(constraint.get("after") or "").strip()
+        if not before or not after or before == after:
+            raise OperatorError("Invalid partial-order edge")
+        nodes.update((before, after))
+        edges.add((before, after))
+    if not edges or len(nodes) > 128 or len(edges) > 512:
+        raise OperatorError("Partial-order task exceeds the processor budget")
+    return {**state, "nodes": sorted(nodes), "edges": sorted(edges)}
+
+
+def topological_linearize(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    nodes = [str(item) for item in state.get("nodes") or []]
+    edges = [(str(left), str(right)) for left, right in state.get("edges") or []]
+    incoming = {node: 0 for node in nodes}
+    outgoing = {node: [] for node in nodes}
+    for before, after in edges:
+        incoming[after] += 1
+        outgoing[before].append(after)
+    ready = [node for node, degree in incoming.items() if degree == 0]
+    heapq.heapify(ready)
+    ordered: list[str] = []
+    while ready:
+        node = heapq.heappop(ready)
+        ordered.append(node)
+        for successor in sorted(outgoing[node]):
+            incoming[successor] -= 1
+            if incoming[successor] == 0:
+                heapq.heappush(ready, successor)
+    if len(ordered) != len(nodes):
+        raise OperatorError("Partial-order constraints contain a cycle")
+    return {**state, "ordered": ordered, "order_valid": True}
+
+
+def emit_order(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    ordered = state.get("ordered")
+    if not isinstance(ordered, list):
+        raise OperatorError("No partial-order model exists")
+    return {**state, "answer": list(ordered)}
+
+
+def enumerate_unknown_assignments(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    facts: dict[tuple[str, str], bool | None] = {}
+    relations: list[dict[str, str]] = []
+    query: dict[str, Any] | None = None
+    for constraint in task.constraints:
+        kind = constraint.get("kind")
+        if kind == "entity_property":
+            entity = str(constraint.get("entity") or "").strip()
+            property_name = str(constraint.get("property") or "").strip()
+            value = constraint.get("value")
+            if not entity or not property_name or value not in {True, False, None}:
+                raise OperatorError("Invalid entity-property premise")
+            facts[(entity, property_name)] = value
+        elif kind == "directed_relation":
+            relation = {
+                "subject": str(constraint.get("subject") or "").strip(),
+                "predicate": str(constraint.get("predicate") or "").strip(),
+                "object": str(constraint.get("object") or "").strip(),
+            }
+            if not all(relation.values()):
+                raise OperatorError("Invalid directed-relation premise")
+            relations.append(relation)
+        elif kind == "exists_relation_by_property":
+            query = dict(constraint)
+        else:
+            raise OperatorError("Unsupported Boolean case-analysis constraint")
+    unknowns = sorted(key for key, value in facts.items() if value is None)
+    if len(unknowns) > 10:
+        raise OperatorError("Unknown assignment space exceeds the processor budget")
+    assignments: list[dict[str, bool]] = []
+    for values in itertools.product((False, True), repeat=len(unknowns)):
+        assignment = {
+            f"{entity}|{property_name}": bool(value)
+            for (entity, property_name), value in facts.items()
+            if value is not None
+        }
+        assignment.update(
+            {
+                f"{entity}|{property_name}": bool(value)
+                for (entity, property_name), value in zip(unknowns, values)
+            }
+        )
+        assignments.append(assignment)
+    if query is None or not relations or not assignments:
+        raise OperatorError("Boolean case-analysis task is incomplete")
+    return {
+        **state,
+        "assignments": assignments,
+        "unknowns": [f"{entity}|{property_name}" for entity, property_name in unknowns],
+        "relations": relations,
+        "query": query,
+    }
+
+
+def evaluate_existential_relation(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    query = state.get("query") or {}
+    predicate = str(query.get("predicate") or "")
+    subject_property = str(query.get("subject_property") or "")
+    object_property = str(query.get("object_property") or "")
+    subject_value = bool(query.get("subject_value"))
+    object_value = bool(query.get("object_value"))
+    case_results: list[dict[str, Any]] = []
+    for assignment in state.get("assignments") or []:
+        witnesses: list[dict[str, str]] = []
+        for relation in state.get("relations") or []:
+            if relation.get("predicate") != predicate:
+                continue
+            subject = str(relation.get("subject") or "")
+            obj = str(relation.get("object") or "")
+            if (
+                assignment.get(f"{subject}|{subject_property}") is subject_value
+                and assignment.get(f"{obj}|{object_property}") is object_value
+            ):
+                witnesses.append({"subject": subject, "object": obj})
+        case_results.append(
+            {
+                "assignment": dict(assignment),
+                "satisfied": bool(witnesses),
+                "witnesses": witnesses,
+            }
+        )
+    return {
+        **state,
+        "case_results": case_results,
+        "entailed": bool(case_results) and all(item["satisfied"] for item in case_results),
+        "entailment_valid": True,
+    }
+
+
+def emit_entailment(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    if "entailed" not in state:
+        raise OperatorError("No Boolean entailment model exists")
+    return {**state, "answer": bool(state["entailed"])}
+
+
 OPERATORS = {
     "SUM_CONSTRAINT_MENTIONS": sum_constraint_mentions,
     "MAX_CONSTRAINT_ONLY": max_constraint_only,
@@ -159,4 +307,10 @@ OPERATORS = {
     "EMIT_MODEL_CARDINALITY": emit_model_cardinality,
     "EVALUATE_BOUNDED_EXPRESSION": evaluate_bounded_expression,
     "SELECT_GROUNDED_CANDIDATES": select_grounded_candidates,
+    "COLLECT_PARTIAL_ORDER": collect_partial_order,
+    "TOPOLOGICAL_LINEARIZE": topological_linearize,
+    "EMIT_ORDER": emit_order,
+    "ENUMERATE_UNKNOWN_ASSIGNMENTS": enumerate_unknown_assignments,
+    "EVALUATE_EXISTENTIAL_RELATION": evaluate_existential_relation,
+    "EMIT_ENTAILMENT": emit_entailment,
 }

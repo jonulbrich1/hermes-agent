@@ -90,8 +90,8 @@ class HeuristicSemanticInterface:
                 reasons=["Offline heuristic recognized an internal-state request."],
             )
 
-        if looks_self_contained_reasoning(text):
-            structural = infer_structural_fields(text) or {}
+        structural = infer_structural_fields(text) or {}
+        if structural or looks_self_contained_reasoning(text):
             return IntentEnvelope(
                 original_request=request,
                 normalized_request=text,

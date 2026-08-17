@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+import platform
 import re
 import shutil
 from pathlib import Path
@@ -61,6 +62,62 @@ KNOWN_BOOTSTRAP_ANSWERS = {
 ACTIVE_WEAVE_MIN_RETRIEVAL_SCORE = 0.45
 
 
+def _git_commit(project_root: Path | None) -> str | None:
+    if project_root is None:
+        return None
+    head_path = project_root / ".git" / "HEAD"
+    try:
+        head = head_path.read_text(encoding="utf-8").strip()
+        if head.startswith("ref: "):
+            return (project_root / ".git" / head[5:]).read_text(encoding="utf-8").strip()
+        return head or None
+    except OSError:
+        return None
+
+
+def _format_boolean_entailment(task: StructuralTask, answer: bool) -> str:
+    if not answer:
+        return "No. The requested relation does not hold in every allowed assignment of the unknown values."
+    unknowns = [
+        str(item.get("entity") or "")
+        for item in task.constraints
+        if item.get("kind") == "entity_property" and item.get("value") is None
+    ]
+    if len(unknowns) == 1:
+        entity = unknowns[0]
+        relations = [item for item in task.constraints if item.get("kind") == "directed_relation"]
+        known_properties = {
+            str(item.get("entity") or ""): item.get("value")
+            for item in task.constraints
+            if item.get("kind") == "entity_property" and item.get("value") is not None
+        }
+        false_witness = next(
+            (
+                item
+                for item in relations
+                if known_properties.get(str(item.get("subject") or "")) is True
+                and str(item.get("object") or "") == entity
+            ),
+            None,
+        )
+        true_witness = next(
+            (
+                item
+                for item in relations
+                if str(item.get("subject") or "") == entity
+                and known_properties.get(str(item.get("object") or "")) is False
+            ),
+            None,
+        )
+        if false_witness and true_witness:
+            return (
+                f"Yes. If {entity} is unmarried, {false_witness['subject']} looks at {entity}; "
+                f"if {entity} is married, {entity} looks at {true_witness['object']}. "
+                "The conclusion holds in every assignment of the unknown value."
+            )
+    return "Yes. The conclusion holds in every allowed assignment of the unknown values."
+
+
 class MvpOrganicSystem:
     """Shared bridge from the scaffold contracts into the hardened MVP modules."""
 
@@ -107,15 +164,35 @@ class MvpOrganicSystem:
             )
             self.broker = EvidenceBroker(self.root, self.config, self.db, self.logger, self.audit)
             self.memory = MemoryCompiler(self.db, self.executive, self.logger, self.audit)
+            project_root_value = os.getenv("ORGANIC_PROJECT_ROOT")
+            project_root = (
+                Path(project_root_value).expanduser().resolve()
+                if project_root_value
+                else None
+            )
             self.review = ReviewExporter(
                 self.root,
-                "windows",
+                platform.system().lower() or os.name,
                 self.config,
                 self.db,
                 self.memory,
                 self.logger,
                 self.audit,
                 trace_dir=settings.trace_dir,
+                runtime_metadata={
+                    "backend": settings.backend,
+                    "semantic_mode": settings.semantic_mode,
+                    "semantic_model": settings.model,
+                    "ollama_base_url": settings.ollama_base_url,
+                    "web_provider": settings.web_provider,
+                    "idle_growth_enabled": settings.idle_growth_enabled,
+                    "processor_max_cycles": settings.processor_max_cycles,
+                    "hermes_mode": os.getenv("ORGANIC_HERMES_MODE", "0") == "1",
+                    "hermes_plugin_enabled": os.getenv("ORGANIC_HERMES_PLUGIN_ENABLED", "0") == "1",
+                    "shared_runtime_url": os.getenv("ORGANIC_RUNTIME_URL", "http://127.0.0.1:8788"),
+                    "project_root": str(project_root) if project_root else None,
+                    "git_commit": _git_commit(project_root),
+                },
             )
             self._recover_interrupted_tasks()
             self.engine = OrganicEngine(
@@ -128,6 +205,7 @@ class MvpOrganicSystem:
                 self.logger,
                 self.audit,
                 processor=self.processor,
+                processor_growth_callback=self._run_processor_growth_cycle,
             )
             self.core_calls = 0
             self.growth_calls = 0
@@ -163,6 +241,47 @@ class MvpOrganicSystem:
             )
         if rows:
             self.audit.write("interrupted_tasks_recovered", count=len(rows))
+
+    def _run_processor_growth_cycle(self) -> dict[str, Any]:
+        task = self.processor.next_growth_task()
+        if task is None:
+            return {"attempted": False}
+        discovery = self.processor.discover(task)
+        attempts = list(discovery.alternatives)
+        accepted_trace = None
+        rewards: list[dict[str, Any]] = []
+        for trace in attempts:
+            verification = verify_trace(task, trace)
+            self.processor.learn(trace, verification.reward, "idle_result_validator")
+            rewards.append(
+                {
+                    "pathway": trace.pathway,
+                    "reward": verification.reward,
+                    "accepted": verification.accepted,
+                    "result_code": verification.result_code,
+                }
+            )
+            if verification.accepted and accepted_trace is None:
+                accepted_trace = trace
+        if accepted_trace is not None:
+            self.processor.promote_discovered(task, accepted_trace)
+            status = "RESOLVED"
+        else:
+            self.processor.record_growth_failure(
+                task,
+                discovery.capability_gap or "No discovered pathway passed external verification.",
+            )
+            status = "WAITING_FOR_PRIMITIVE"
+        result = {
+            "attempted": True,
+            "status": status,
+            "capability_signature": task.capability_signature(),
+            "candidate_count": len(attempts),
+            "selected_pathway": accepted_trace.pathway if accepted_trace else None,
+            "rewards": rewards,
+        }
+        self.audit.write("processor_growth_attempt", **result)
+        return result
 
     def close(self) -> None:
         if self._closed:
@@ -806,6 +925,33 @@ class MvpOrganicSystem:
             else None
         )
         attempts = list(processor_result.alternatives) if processor_result else []
+        processor_growth_attempted = False
+        processor_gap_key = None
+        if structural_task is not None and not attempts:
+            processor_growth_attempted = True
+            processor_gap_key = self.processor.register_gap(
+                structural_task,
+                (
+                    processor_result.capability_gap
+                    if processor_result is not None
+                    else "No executable pathway was available."
+                ),
+            )
+            discovery = self.processor.discover(
+                structural_task,
+                max_candidates=max(1, int(plan.max_processor_cycles)),
+            )
+            attempts = list(discovery.alternatives)
+            self.db.add_task_event(
+                task_id,
+                "ORGANIC_PROCESSOR_GROWTH_ATTEMPT",
+                f"Discovered {len(attempts)} approved operator composition(s).",
+                {
+                    "capability_signature": structural_task.capability_signature(),
+                    "candidate_pathways": [trace.pathway for trace in attempts],
+                    "capability_gap": discovery.capability_gap,
+                },
+            )
         verified: list[tuple[Any, Any]] = []
         rewards: list[dict[str, Any]] = []
         for trace in attempts:
@@ -825,6 +971,14 @@ class MvpOrganicSystem:
         selected = selected_pair[0] if selected_pair else None
         selected_verification = selected_pair[1] if selected_pair else None
         accepted = selected is not None and selected_verification is not None
+        if processor_growth_attempted and structural_task is not None:
+            if accepted and selected is not None:
+                self.processor.promote_discovered(structural_task, selected)
+            else:
+                self.processor.record_growth_failure(
+                    structural_task,
+                    "No discovered pathway passed deterministic external verification.",
+                )
         cycles: list[dict[str, Any]] = []
         for index, (trace, verification) in enumerate(verified, start=1):
             cycle = {
@@ -857,6 +1011,10 @@ class MvpOrganicSystem:
                 f"{answer_value} {label}. The same objects can satisfy more than one relative-position "
                 "description, so the stated groups overlap in the smallest consistent arrangement."
             )
+        elif accepted and structural_task and structural_task.family == "partial_order":
+            answer = ", ".join(str(item) for item in (answer_value or []))
+        elif accepted and structural_task and structural_task.family == "boolean_case_analysis":
+            answer = _format_boolean_entailment(structural_task, bool(answer_value))
         elif accepted:
             answer = str(answer_value)
         else:
@@ -868,11 +1026,17 @@ class MvpOrganicSystem:
             )
         selected_operators = list(selected.operators) if selected else []
         selected_model = None
+        selected_model_details: dict[str, Any] = {}
         if selected:
             for intermediate in selected.intermediate:
                 state = intermediate.get("state") if isinstance(intermediate, dict) else None
                 if isinstance(state, dict) and isinstance(state.get("model"), list):
                     selected_model = state["model"]
+                if isinstance(state, dict) and isinstance(state.get("ordered"), list):
+                    selected_model_details["ordered_items"] = list(state["ordered"])
+                if isinstance(state, dict) and isinstance(state.get("case_results"), list):
+                    selected_model_details["case_count"] = len(state["case_results"])
+                    selected_model_details["all_cases_satisfied"] = bool(state.get("entailed"))
         validation_checks = (
             dict(selected_verification.checks) if selected_verification else {"supported_family": False}
         )
@@ -897,8 +1061,14 @@ class MvpOrganicSystem:
                 "minimal_model": bool(
                     accepted and structural_task and structural_task.family == "order_cardinality"
                 ),
+                **selected_model_details,
             },
             "attempts": cycles,
+            "growth": {
+                "attempted": processor_growth_attempted,
+                "capability_signature": processor_gap_key,
+                "promoted": bool(processor_growth_attempted and accepted),
+            },
         }
         review = {
             "complete": accepted,
@@ -946,6 +1116,10 @@ class MvpOrganicSystem:
             metadata={
                 "resource_plan_id": plan.plan_id,
                 "external_resources_used": False,
+                "structural_task": structural_task.to_dict() if structural_task else None,
+                "processor_growth_attempted": processor_growth_attempted,
+                "processor_gap_key": processor_gap_key,
+                "processor_pathway_promoted": bool(processor_growth_attempted and accepted),
                 "legacy_seed": self.legacy_processor.status(),
             },
         )
@@ -981,6 +1155,11 @@ class MvpOrganicSystem:
             answer=answer,
             active_paths=[
                 "COGNITION_CONSTRAINT_WEAVE",
+                *(
+                    ["ORGANIC_PROCESSOR_GROWTH:PATHWAY_DISCOVERY"]
+                    if processor_growth_attempted
+                    else []
+                ),
                 *[f"ORGANIC_PROCESSOR:{operator}" for operator in selected_operators],
                 "RESULT_VALIDATOR:verify_constraints",
             ],
@@ -991,6 +1170,9 @@ class MvpOrganicSystem:
                 "processor_capabilities": plan.processor_capabilities,
                 "processor_operators": selected_operators,
                 "processor_cycles": len(cycles),
+                "processor_growth_attempted": processor_growth_attempted,
+                "processor_gap_key": processor_gap_key,
+                "processor_pathway_promoted": bool(processor_growth_attempted and accepted),
                 "confidence": 0.99 if accepted else 0.0,
                 "missing": [] if accepted else ["No verified processor pathway for the structural task."],
                 "sources": [],

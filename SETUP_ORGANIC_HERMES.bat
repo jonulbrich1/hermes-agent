@@ -30,7 +30,11 @@ if not exist organic_runtime\.venv\Scripts\python.exe (
     if %ERRORLEVEL% NEQ 0 goto fail
 )
 
+python scripts\configure_organic_hermes.py
+if %ERRORLEVEL% NEQ 0 goto fail
+
 echo [Organic AI] Setup complete.
+echo [Organic AI] Hermes plugin enabled and Organic MCP server configured.
 echo [Organic AI] Start the GUI with RUN_ORGANIC_HERMES_GUI.bat
 exit /b 0
 

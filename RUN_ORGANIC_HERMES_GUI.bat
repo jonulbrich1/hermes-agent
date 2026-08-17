@@ -23,6 +23,19 @@ if not exist organic_runtime\.venv\Scripts\python.exe (
     exit /b 1
 )
 
+"%PYEXE%" scripts\configure_organic_hermes.py >nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [Organic AI] Could not enable the Hermes plugin or configure MCP.
+    exit /b 1
+)
+set ORGANIC_HERMES_PLUGIN_ENABLED=1
+
+"%PYEXE%" scripts\ensure_organic_runtime.py
+if %ERRORLEVEL% NEQ 0 (
+    echo [Organic AI] The shared Organic runtime did not start.
+    exit /b 1
+)
+
 where ollama >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     echo [Organic AI] Warning: Ollama was not found. The Organic tab will show the Qwen connection error.
@@ -30,6 +43,10 @@ if %ERRORLEVEL% NEQ 0 (
     ollama list | findstr /I /C:"qwen3:0.6b" >nul 2>&1
     if %ERRORLEVEL% NEQ 0 (
         echo [Organic AI] Warning: qwen3:0.6b is missing. Run: ollama pull qwen3:0.6b
+    )
+    ollama list | findstr /I /C:"%ORGANIC_HERMES_CHAT_MODEL%" >nul 2>&1
+    if %ERRORLEVEL% NEQ 0 (
+        echo [Organic AI] Warning: %ORGANIC_HERMES_CHAT_MODEL% is missing. Run: ollama pull %ORGANIC_HERMES_CHAT_MODEL%
     )
 )
 

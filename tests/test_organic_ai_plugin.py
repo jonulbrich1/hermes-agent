@@ -19,6 +19,7 @@ spec.loader.exec_module(pkg)
 
 from organic_ai_plugin.gate import InteractionGate, Route
 from organic_ai_plugin.growth import GrowthFrontierGuard
+from organic_ai_plugin import middleware as organic_middleware
 from organic_ai_plugin.middleware import on_llm_request
 from organic_ai_plugin.runtime.store import OrganicStore
 
@@ -77,11 +78,40 @@ request = {
         {"type": "function", "function": {"name": "web_search", "parameters": {}}},
     ],
 }
+handoff_requests = []
+
+
+def _fake_handoff(text):
+    handoff_requests.append(text)
+    return {
+        "answer": "Validated Organic answer.",
+        "route": "organic_core",
+        "trace_id": "test-trace",
+        "metadata": {
+            "hard_blocked": False,
+            "semantic_interface_completeness": {"complete": True},
+        },
+    }
+
+
+organic_middleware._organic_handoff = _fake_handoff
 out = on_llm_request(request=request, turn_id="fork-test")["request"]
 names = {t["function"]["name"] for t in out.get("tools", [])}
 T("Factual route filters direct terminal/web tools", "terminal" not in names and "web_search" not in names)
-T("Factual first pass requires an Organic tool", out.get("tool_choice") == "required")
-T("Main factual pass exposes only the Organic Cognition entry tool", names == {"organic_reason"})
+T("Factual first pass executes direct Organic handoff", handoff_requests == ["What causes plate tectonics?"])
+T("Hermes presenter pass exposes no bypass tools", names == set() and "tool_choice" not in out)
+T("Hermes presenter receives validated Organic result", "Validated Organic answer." in out["messages"][0]["content"])
+
+provider_shaped = on_llm_request(
+    request={"messages": [], "tools": request["tools"]},
+    user_message="What causes plate tectonics?",
+    turn_id="fork-explicit-user-test",
+)["request"]
+T(
+    "Hermes original user turn drives Organic middleware",
+    handoff_requests[-1] == "What causes plate tectonics?"
+    and provider_shaped.get("tools") == [],
+)
 
 with tempfile.TemporaryDirectory() as td:
     store = OrganicStore(Path(td) / "mem.sqlite")

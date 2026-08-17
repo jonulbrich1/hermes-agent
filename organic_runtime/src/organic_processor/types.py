@@ -16,6 +16,28 @@ class StructuralTask:
         kinds = sorted(str(item.get("kind", "")) for item in self.constraints)
         return f"{self.family}|{self.goal}|{'/'.join(kinds)}"
 
+    def capability_signature(self) -> str:
+        kinds = sorted({str(item.get("kind", "")) for item in self.constraints})
+        return f"{self.family}|{self.goal}|{'/'.join(kinds)}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "family": self.family,
+            "goal": self.goal,
+            "constraints": [dict(item) for item in self.constraints],
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "StructuralTask":
+        constraints = value.get("constraints")
+        if not isinstance(constraints, list):
+            raise ValueError("Structural task constraints must be a list")
+        return cls(
+            family=str(value.get("family") or ""),
+            goal=str(value.get("goal") or ""),
+            constraints=tuple(dict(item) for item in constraints if isinstance(item, dict)),
+        )
+
 
 @dataclass
 class ProcessTrace:

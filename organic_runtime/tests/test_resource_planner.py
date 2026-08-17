@@ -109,3 +109,54 @@ def test_planner_uses_current_request_not_stale_semantic_normalization():
 
     assert envelope.reasoning_family == "bounded_arithmetic"
     assert plan.processor_capabilities == ["bounded_arithmetic"]
+
+
+def test_structural_compiler_preserves_unknown_as_case_analysis_variable():
+    request = (
+        "Jack is looking at Anne. Anne is looking at George. Jack is married, "
+        "George is not, and we don't know if Anne is married. Is a married person "
+        "looking at an unmarried person?"
+    )
+    structural = infer_structural_fields(request)
+
+    assert structural is not None
+    assert structural["sufficient_premises"] is True
+    assert structural["reasoning_family"] == "boolean_case_analysis"
+    anne = next(
+        item
+        for item in structural["structural_constraints"]
+        if item.get("kind") == "entity_property" and item.get("entity") == "Anne"
+    )
+    assert anne["value"] is None
+
+
+def test_structural_compiler_builds_transitive_order_premises_without_answer():
+    structural = infer_structural_fields(
+        "Five people were eating apples, A finished before B, but behind C. "
+        "D finished before E, but behind B. What was the finishing order?"
+    )
+
+    assert structural is not None
+    assert structural["reasoning_family"] == "partial_order"
+    edges = {
+        (item["before"], item["after"])
+        for item in structural["structural_constraints"]
+    }
+    assert edges == {("A", "B"), ("C", "A"), ("D", "E"), ("B", "D")}
+    assert all("answer" not in item for item in structural["structural_constraints"])
+
+
+def test_structural_compiler_accepts_present_tense_before_and_after():
+    structural = infer_structural_fields(
+        "Five runners A, B, C, D, and E finish a race. A finishes before B. "
+        "C finishes before A. D finishes after B. E finishes after D. "
+        "What is the finishing order?"
+    )
+
+    assert structural is not None
+    assert structural["reasoning_family"] == "partial_order"
+    edges = {
+        (item["before"], item["after"])
+        for item in structural["structural_constraints"]
+    }
+    assert edges == {("A", "B"), ("C", "A"), ("B", "D"), ("D", "E")}

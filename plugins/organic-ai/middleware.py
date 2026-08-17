@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-import os
 import threading
 import time
 
@@ -14,6 +12,20 @@ from .gate import InteractionGate, Route, allowed_tools
 _GATE = InteractionGate()
 _LOCK = threading.RLock()
 _TURNS: dict[str, dict] = {}
+
+
+def _prune_turns(now: float, max_age_seconds: float = 3600.0, max_entries: int = 256) -> None:
+    for key, value in list(_TURNS.items()):
+        if now - float(value.get("created_at") or now) > max_age_seconds:
+            _TURNS.pop(key, None)
+    overflow = len(_TURNS) - max_entries
+    if overflow > 0:
+        oldest = sorted(
+            _TURNS,
+            key=lambda key: float(_TURNS[key].get("created_at") or 0.0),
+        )
+        for key in oldest[:overflow]:
+            _TURNS.pop(key, None)
 
 
 def _turn_key(kwargs) -> str:
@@ -63,6 +75,22 @@ def _latest_user_text(request: dict) -> str:
     return ""
 
 
+def _explicit_user_text(value) -> str:
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict):
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "\n".join(part for part in parts if part.strip())
+
+
 def _inject_system_instruction(request: dict, text: str):
     messages = request.get("messages")
     if isinstance(messages, list):
@@ -77,27 +105,47 @@ def _inject_system_instruction(request: dict, text: str):
     return req
 
 
+def _organic_handoff(user_text: str) -> dict:
+    from .tools import _runtime_api
+
+    result = _runtime_api("POST", "/api/message", {"text": user_text}, timeout=180.0)
+    if not isinstance(result, dict) or not str(result.get("answer") or "").strip():
+        raise RuntimeError("The shared Organic runtime returned no presentable result.")
+    metadata = result.get("metadata") or {}
+    return {
+        "answer": result.get("answer"),
+        "route": result.get("route"),
+        "trace_id": result.get("trace_id"),
+        "metadata": {
+            "semantic_interface_completeness": metadata.get(
+                "semantic_interface_completeness"
+            ),
+            "hard_blocked": metadata.get("hard_blocked"),
+        },
+    }
+
+
 def on_llm_request(**kwargs):
     request = dict(kwargs["request"])
     turn = _turn_key(kwargs)
-    user_text = _latest_user_text(request)
+    user_text = _explicit_user_text(kwargs.get("user_message")) or _latest_user_text(request)
     rolling_context: dict = {}
-    if os.environ.get("ORGANIC_MVP_DATA_DIR"):
-        try:
-            from .tools import _mvp_system
+    try:
+        from .tools import _runtime_api
 
-            system = _mvp_system()
-            loader = getattr(system, "load_rolling_context", None) if system is not None else None
-            if callable(loader):
-                rolling_context = loader(user_text)
-        except Exception:
-            rolling_context = {}
+        runtime_state = _runtime_api("GET", "/api/state", timeout=1.0)
+        candidate_context = runtime_state.get("rolling_context")
+        if isinstance(candidate_context, dict):
+            rolling_context = candidate_context
+    except Exception:
+        rolling_context = {}
 
     with _LOCK:
         state = _TURNS.setdefault(turn, {
             "organic_tool_used": False,
             "created_at": time.time(),
         })
+        _prune_turns(time.time())
 
         # A future memory preflight can be injected into state by an observer.
         memory_confidence = float(state.get("memory_confidence") or 0.0)
@@ -109,25 +157,32 @@ def on_llm_request(**kwargs):
         allowed = allowed_tools(decision.route)
         original_tools = list(request.get("tools") or [])
         filtered = [t for t in original_tools if _tool_name(t) in allowed]
-        request["tools"] = filtered
+        organic_result = state.get("organic_result")
+        if decision.route != Route.CONVERSATION and not isinstance(organic_result, dict):
+            organic_result = _organic_handoff(user_text)
+            state["organic_result"] = organic_result
+            state["organic_tool_used"] = True
+            state["last_organic_tool"] = "shared_runtime_handoff"
+            state["last_organic_tool_at"] = time.time()
 
-        if decision.route != Route.CONVERSATION and not filtered:
-            raise RuntimeError(
-                "Organic mode failed closed because its authorized entry tool is unavailable."
+        # The presenter pass cannot directly invoke another tool. Any additional
+        # authorized loop is requested and executed inside the shared runtime.
+        request["tools"] = []
+        request.pop("tool_choice", None)
+
+        result_context = ""
+        if isinstance(organic_result, dict):
+            metadata = organic_result.get("metadata") or {}
+            result_context = json.dumps(
+                {
+                    "answer": organic_result.get("answer"),
+                    "route": organic_result.get("route"),
+                    "trace_id": organic_result.get("trace_id"),
+                    "completeness": metadata.get("semantic_interface_completeness"),
+                    "hard_blocked": metadata.get("hard_blocked"),
+                },
+                ensure_ascii=False,
             )
-
-        first_organic_call_required = (
-            decision.route != Route.CONVERSATION
-            and not state.get("organic_tool_used")
-            and bool(filtered)
-        )
-
-        if first_organic_call_required:
-            request["tool_choice"] = "required"
-        elif filtered:
-            request["tool_choice"] = "auto"
-        else:
-            request.pop("tool_choice", None)
 
         instruction = f"""
 You are the Semantic Interface Agent for Organic AI.
@@ -135,6 +190,7 @@ You are the Semantic Interface Agent for Organic AI.
 Authorized route: {decision.route.value}
 Gate reasons: {'; '.join(decision.reasons)}
 Rolling Cognition: {json.dumps(rolling_context, ensure_ascii=False)[:4000]}
+Validated Organic result: {result_context or "not required for conversation"}
 
 You are a presenter and tool operator, not the logic core.
 
@@ -143,8 +199,8 @@ Hard rules:
 - Do not treat Rolling Cognition as trusted factual memory; use it only for active task and referent context.
 - Do not directly decide factual truth.
 - Do not write trusted memory.
-- When an Organic tool is available, use it for factual/reasoning work.
-- If the Organic result does not answer the user's actual question, call another authorized Organic tool or request refinement.
+- For non-conversation turns, present only the supplied validated Organic result. Do not solve the request again or add a new conclusion.
+- The shared runtime owns completeness checks and any additional authorized tool loop.
 - If the request depends on unresolved context, resolve the referent from conversation context or ask for clarification. Never web-search a meaningless literal query such as "why is it?".
 - Present grounded Organic results naturally after the required Organic tool path has executed.
 """.strip()
@@ -154,7 +210,11 @@ Hard rules:
     return {
         "request": request,
         "source": "organic-ai",
-        "reason": f"Interaction Gate route={decision.route.value}; exposed {len(filtered)} Organic tools.",
+        "reason": (
+            f"Interaction Gate route={decision.route.value}; "
+            f"shared_handoff={isinstance(organic_result, dict)}; "
+            f"candidate_tools={len(filtered)}."
+        ),
     }
 
 

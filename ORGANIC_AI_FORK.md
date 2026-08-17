@@ -58,11 +58,19 @@ Organic AI owns:
 - Rolling Cognition working context
 
 The Semantic Interface model is not allowed to silently answer factual or
-reasoning requests from pretrained knowledge. The Organic middleware restricts
-available tools by gate-authorized route and requires an Organic tool call before
-presentation on non-conversation routes. Qwen may present only a validated
-Organic result; deterministic guards reject new numbers, dropped grounded
-versions, and attempts to rejudge a verified closed-world result.
+reasoning requests from pretrained knowledge. The Organic middleware performs a
+programmatic shared-runtime handoff before the Hermes presenter runs on every
+non-conversation route. The presenter receives no bypass tools on that pass.
+Qwen may present only a validated Organic result; deterministic guards reject
+new numbers, dropped grounded versions, and attempts to rejudge a verified
+closed-world result.
+
+Processor capability gaps are durable growth inputs. The processor records a
+bounded structural task on its capability frontier, searches approved operator
+compositions, submits every candidate to an independent verifier, and promotes
+only a verified pathway. Idle time retries pending processor growth before the
+Executive selects the next graph-growth task. Qwen can propose structure but
+cannot generate executable operators, assign rewards, or approve a pathway.
 
 The detailed processor POC review, implemented architecture, live acceptance
 results, and remaining capability gaps are documented in
@@ -109,11 +117,26 @@ SETUP_ORGANIC_HERMES.bat
 ```
 
 This creates the Hermes environment, installs MCP support for the dashboard,
-and ensures the embedded Organic runtime environment exists. Qwen still runs
-through Ollama:
+ensures the embedded Organic runtime environment exists, enables the
+`organic-ai` plugin, and configures the shared Organic MCP server. Qwen still
+runs through Ollama as the Organic Semantic Interface. Hermes Chat uses a
+separate context-capable tool-calling model (`gemma4:e2b` by default) because
+Hermes requires at least a 64K context window:
 
 ```bat
 ollama pull qwen3:0.6b
+ollama pull gemma4:e2b
+```
+
+Set `ORGANIC_HERMES_CHAT_MODEL` before launching to use another Hermes model.
+This does not change Qwen's role between the user request and the Organic Core.
+
+Linux uses the equivalent scripts:
+
+```bash
+chmod +x ./*.sh
+./SETUP_ORGANIC_HERMES.sh
+./RUN_ORGANIC_HERMES_GUI.sh
 ```
 
 ## Running The Hermes GUI With Organic
@@ -134,11 +157,14 @@ Open:
 http://127.0.0.1:9119/organic
 ```
 
-The normal Hermes Chat tab remains available. The launcher sets local Qwen /
-Ollama variables and `HERMES_TUI_TOOLSETS=all` so Hermes chat can see Organic
-tools when the plugin and MCP server are enabled. It also disables npm's local
-engine-strict check for this source-tree run because the current Windows Node
-install is older than Hermes' preferred build engine.
+The normal Hermes Chat tab is directly integrated. Every launcher idempotently
+enables the Organic plugin, configures MCP, starts the shared runtime before the
+dashboard, and enables fail-closed Organic mode. Nontrivial Chat requests must
+cross the programmatic Organic handoff; greetings remain conversational. The
+MCP and native Organic tools remain available for explicit tool selection and
+diagnostics. The Windows launcher also disables npm's local engine-strict check
+for this source-tree run because the current Windows Node install is older than
+Hermes' preferred build engine.
 
 ## Standalone Organic GUI
 
@@ -150,17 +176,16 @@ This is kept as a troubleshooting path and opens the old Organic-only GUI on
 the shared runtime port `8788`. If the Hermes runtime is already active, the
 launcher opens that existing process instead of creating another engine.
 
-## Enabling In Hermes
+## Direct Hermes Integration
 
-Use Hermes' normal plugin enable/config flow and enable the `organic-ai` plugin.
-At minimum set:
+Setup and launch configure these values on Windows and Linux:
 
 ```text
 ORGANIC_PROJECT_ROOT=<path-to-this-hermes_fork>
 ORGANIC_HOME=<path-to-this-hermes_fork>\runtime\organic_home
-ORGANIC_MVP_DATA_DIR=<path-to-this-hermes_fork>\runtime\organic_home\mvp
-ORGANIC_TRACE_DIR=<path-to-this-hermes_fork>\runtime\organic_home\traces
-ORGANIC_REVIEW_DIR=<path-to-this-hermes_fork>\reveiw
+ORGANIC_MVP_DATA_DIR=<path-to-this-hermes_fork>/runtime/organic_home/mvp
+ORGANIC_TRACE_DIR=<path-to-this-hermes_fork>/runtime/organic_home/traces
+ORGANIC_REVIEW_DIR=<path-to-this-hermes_fork>/reveiw
 ORGANIC_IDLE_GROWTH_ENABLED=1
 ORGANIC_WEB_PROVIDER=auto
 ORGANIC_RUNTIME_URL=http://127.0.0.1:8788
@@ -168,8 +193,6 @@ ORGANIC_RUNTIME_URL=http://127.0.0.1:8788
 
 The Organic plugin toolset name is `organic_ai`.
 
-The Organic MCP server can be registered from the Organic dashboard tab. It
-adds or updates the `organic-ai` MCP entry in Hermes config and starts MCP
-discovery in the dashboard process. MCP calls are forwarded to the one shared
-Organic runtime so Engine state, growth tasks, rolling cognition, and Living
-Memory remain coherent.
+The Organic dashboard can still re-register MCP manually. MCP calls are
+forwarded to the one shared Organic runtime so Engine state, processor growth,
+graph growth, rolling cognition, and Living Memory remain coherent.

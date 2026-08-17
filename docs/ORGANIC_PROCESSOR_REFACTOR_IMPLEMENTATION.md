@@ -32,6 +32,8 @@ flowchart TD
     E --> C["Cognition / typed Active Weave"]
     C --> OP["Bounded Organic Processor"]
     OP --> V["External deterministic result verifier"]
+    V -->|"verified reward"| PG["Persistent pathway / capability growth"]
+    PG --> OP
     V --> E
     E --> B["Evidence Broker / web when authorized"]
     B --> MC["Memory Compiler / Validator"]
@@ -73,6 +75,20 @@ The new standalone `organic_processor` package supports these bounded families:
   calls, names, or unbounded values.
 - `grounded_evidence_selection`: performs ranked threshold/top-k selection over
   references already admitted to the Active Weave.
+- `partial_order`: discovers and retains a topological-linearization pathway
+  from approved order operators, then applies it to arbitrary acyclic precedence
+  constraints.
+- `boolean_case_analysis`: preserves unknown task-local values as variables,
+  enumerates their bounded assignments, and verifies whether a requested
+  existential relation holds in every case.
+
+The latter two families begin as capability gaps. The processor records the
+typed task on a bounded growth frontier, discovers a composition from its
+approved operator inventory, receives verifier rewards, and persists the
+verified pathway. Pending gaps are processed before graph growth while the
+system is idle. A gap that has no applicable primitive remains explicit as
+`WAITING_FOR_PRIMITIVE`; Qwen cannot fill it with generated code or an
+unverified answer.
 
 Processor state uses an atomic JSON replacement, a lock, and a 16 MiB cap. It
 contains structural weights, feedback counts, and promoted composites, not
@@ -118,16 +134,20 @@ Python 3.14.7 is the latest stable Python release.
 - `organic_reason` delegates to the shared full runtime HTTP API in strict mode.
   It fails closed if that runtime is unavailable; the old harness/scaffold path
   is not used.
-- Hermes middleware exposes only the Organic cognition entry tool for nontrivial
-  first passes and requires a tool call.
+- Hermes passes the original user turn directly into middleware. Non-conversation
+  requests execute a programmatic shared-runtime handoff before the presenter
+  model runs, so provider support for required tool calls is not trusted.
 - The Hermes dashboard has an always-dark Organic tab with Executive, processor,
   growth, memory, source, run-result, tool, and MCP status.
 - The Organic MCP server proxies the same shared runtime rather than starting a
   second engine.
 - Rolling Cognition stores bounded working conversation context separately from
   trusted Living Memory.
-- Normal Hermes retains its 64K minimum context. The Qwen semantic role uses a
-  truthful 32K minimum rather than pretending the 0.6B model has 64K.
+- Normal Hermes retains its 64K minimum context and defaults to the installed
+  `gemma4:e2b` model for this project. The Qwen semantic role uses a truthful
+  32K minimum rather than pretending the 0.6B model has 64K.
+- Windows and Linux launchers enable the plugin, configure MCP, and start the
+  shared runtime before Hermes Chat becomes available.
 
 ## Diagnostics
 
@@ -142,24 +162,32 @@ Review ZIPs include:
 - Organic Executive state and Organic Processor state separately;
 - cached source text and provenance;
 - per-request run results.
+- effective runtime, platform, Hermes activation, shared-runtime URL, and Git
+  commit metadata.
 
 ## Validation
 
-- Embedded runtime: 54 tests.
-- Hermes Organic gate/plugin harness: 10/10.
-- Hermes dashboard, MCP, launcher, and dark-mode harness: 48/48.
+- Embedded runtime: 60 tests.
+- Hermes Organic gate/plugin harness: 12/12.
+- Hermes dashboard, MCP, launcher, Linux parity, and dark-mode harness: 61/61.
 - Attached processor POC harness: 34/34.
 - Hermes context-floor assertions: 2/2.
 - Live Qwen/Ollama closed-world puzzle: passed with no external resources.
+- Clean-state Qwen processor growth: two capability gaps discovered, externally
+  verified, promoted, persisted, and included in the review package.
+- Normal Hermes Chat programmatic handoff: passed; the shared runtime request
+  counter and Organic trace both advanced during the Chat turn.
 - Live Qwen/Ollama open-world research: passed with keyless web, Python.org,
   durable compilation, processor selection, Qwen presentation, and completeness.
 - Strict Hermes `organic_reason` live delegation: passed with no fallback.
 
 ## Honest Capability Gaps
 
-This remains an MVP. The bounded processor does not yet implement general
-transitive logic, Boolean constraint solving, variable binding, comparison,
-causal proof search, temporal reasoning, or arbitrary puzzle families. Those
-requests return a capability gap or require grounded evidence; they must not be
-silently solved by Qwen. The missing legacy v0.2.1 seed also remains an explicit
-unavailable adapter until the real artifact and its contract tests are supplied.
+This remains an MVP. The bounded processor now supports transitive partial
+ordering and finite Boolean case analysis, but it does not yet implement general
+variable unification, numeric comparison, causal proof search, temporal
+reasoning, probabilistic inference, or arbitrary puzzle families. Unsupported
+requests enter the capability frontier and remain explicit until an approved
+primitive composition can be externally verified. The missing legacy v0.2.1
+seed also remains unavailable until the real artifact and contract tests are
+supplied.

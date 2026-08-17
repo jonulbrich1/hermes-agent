@@ -2742,6 +2742,7 @@ def run_conversation(
 
                     _llm_request_mw = apply_llm_request_middleware(
                         api_kwargs,
+                        user_message=original_user_message,
                         task_id=effective_task_id,
                         turn_id=turn_id,
                         api_request_id=api_request_id,

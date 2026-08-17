@@ -63,6 +63,7 @@ def _organic_paths() -> dict[str, str]:
 
 def _default_env() -> dict[str, str]:
     paths = _organic_paths()
+    hermes_chat_model = os.environ.get("ORGANIC_HERMES_CHAT_MODEL", "gemma4:e2b")
     return {
         "ORGANIC_PROJECT_ROOT": paths["project_root"],
         "ORGANIC_HOME": paths["home"],
@@ -77,10 +78,11 @@ def _default_env() -> dict[str, str]:
         "ORGANIC_MODEL": "ollama:qwen3:0.6b",
         "ORGANIC_HERMES_MODE": "1",
         "ORGANIC_SEMANTIC_INTERFACE": "1",
+        "ORGANIC_HERMES_CHAT_MODEL": hermes_chat_model,
         "OLLAMA_BASE_URL": "http://127.0.0.1:11434/v1",
         "HERMES_TUI_TOOLSETS": "all",
-        "HERMES_MODEL": "qwen3:0.6b",
-        "HERMES_INFERENCE_MODEL": "qwen3:0.6b",
+        "HERMES_MODEL": hermes_chat_model,
+        "HERMES_INFERENCE_MODEL": hermes_chat_model,
         "HERMES_TUI_PROVIDER": "custom",
         "HERMES_INFERENCE_PROVIDER": "custom",
         "CUSTOM_BASE_URL": "http://127.0.0.1:11434/v1",
@@ -115,7 +117,7 @@ def _mcp_server_config() -> dict[str, Any]:
     _prepare_env()
     root = _project_root()
     runtime_src = str((root / "organic_runtime" / "src").resolve())
-    venv_python = root / "organic_runtime" / ".venv" / "Scripts" / "python.exe"
+    venv_python = _runtime_venv_python()
     command = str(venv_python if venv_python.exists() else Path(sys.executable).resolve())
     env = _default_env()
     env["ORGANIC_RUNTIME_URL"] = _bridge_base_url()
@@ -157,7 +159,18 @@ def _bridge_base_url() -> str:
 
 
 def _bridge_python() -> Path:
-    return _project_root() / "organic_runtime" / ".venv" / "Scripts" / "python.exe"
+    return _runtime_venv_python()
+
+
+def _runtime_venv_python() -> Path:
+    venv = _project_root() / "organic_runtime" / ".venv"
+    windows = venv / "Scripts" / "python.exe"
+    posix = venv / "bin" / "python"
+    if windows.exists():
+        return windows
+    if posix.exists():
+        return posix
+    return windows if os.name == "nt" else posix
 
 
 def _bridge_status(error: str | None = None) -> dict[str, Any]:

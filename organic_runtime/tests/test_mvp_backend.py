@@ -68,7 +68,9 @@ async def test_review_package_includes_stage_traces_and_processor_state(tmp_path
 
         assert any(name.startswith("traces/") and name.endswith(".jsonl") for name in names)
         assert "processor/processor_state.json" in names
+        assert "integration_status.json" in names
         assert '"trace_file_count": 1' in manifest
+        assert '"semantic_mode": "heuristic"' in manifest
     finally:
         _close(runtime)
 

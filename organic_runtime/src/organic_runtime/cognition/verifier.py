@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import heapq
+import itertools
 import math
 import operator
 from dataclasses import dataclass
@@ -66,6 +68,76 @@ def _evaluate_expression(expression: str) -> float:
     if not math.isfinite(value):
         raise ValueError("non-finite result")
     return value
+
+
+def _expected_partial_order(task: StructuralTask) -> list[str] | None:
+    nodes: set[str] = set()
+    edges: set[tuple[str, str]] = set()
+    for constraint in task.constraints:
+        if constraint.get("kind") != "precedes":
+            return None
+        before = str(constraint.get("before") or "")
+        after = str(constraint.get("after") or "")
+        if not before or not after or before == after:
+            return None
+        nodes.update((before, after))
+        edges.add((before, after))
+    incoming = {node: 0 for node in nodes}
+    outgoing = {node: [] for node in nodes}
+    for before, after in edges:
+        incoming[after] += 1
+        outgoing[before].append(after)
+    ready = [node for node, degree in incoming.items() if degree == 0]
+    heapq.heapify(ready)
+    answer: list[str] = []
+    while ready:
+        node = heapq.heappop(ready)
+        answer.append(node)
+        for successor in sorted(outgoing[node]):
+            incoming[successor] -= 1
+            if incoming[successor] == 0:
+                heapq.heappush(ready, successor)
+    return answer if len(answer) == len(nodes) else None
+
+
+def _expected_boolean_entailment(task: StructuralTask) -> tuple[bool | None, int]:
+    facts: dict[tuple[str, str], bool | None] = {}
+    relations: list[tuple[str, str, str]] = []
+    query: dict[str, Any] | None = None
+    for constraint in task.constraints:
+        kind = constraint.get("kind")
+        if kind == "entity_property":
+            facts[(str(constraint.get("entity") or ""), str(constraint.get("property") or ""))] = constraint.get("value")
+        elif kind == "directed_relation":
+            relations.append(
+                (
+                    str(constraint.get("subject") or ""),
+                    str(constraint.get("predicate") or ""),
+                    str(constraint.get("object") or ""),
+                )
+            )
+        elif kind == "exists_relation_by_property":
+            query = dict(constraint)
+        else:
+            return None, 0
+    unknowns = sorted(key for key, value in facts.items() if value is None)
+    if query is None or len(unknowns) > 10:
+        return None, 0
+    outcomes: list[bool] = []
+    for values in itertools.product((False, True), repeat=len(unknowns)):
+        assigned = dict(facts)
+        assigned.update(dict(zip(unknowns, values)))
+        outcomes.append(
+            any(
+                predicate == query.get("predicate")
+                and assigned.get((subject, str(query.get("subject_property") or "")))
+                is bool(query.get("subject_value"))
+                and assigned.get((obj, str(query.get("object_property") or "")))
+                is bool(query.get("object_value"))
+                for subject, predicate, obj in relations
+            )
+        )
+    return bool(outcomes) and all(outcomes), len(outcomes)
 
 
 def verify_trace(task: StructuralTask, trace: ProcessTrace) -> TraceVerification:
@@ -141,6 +213,46 @@ def verify_trace(task: StructuralTask, trace: ProcessTrace) -> TraceVerification
             accepted=bool(matches),
             reward=1.0 if matches else -0.65,
             result_code="verified_grounded_selection" if matches else "rejected_grounded_selection",
+            checks=checks,
+            expected=expected,
+        )
+
+    if task.family == "partial_order" and task.goal == "linearize_order":
+        expected = _expected_partial_order(task)
+        list_result = isinstance(trace.answer, list) and all(
+            isinstance(item, str) and item for item in trace.answer
+        )
+        matches = list_result and expected is not None and trace.answer == expected
+        checks = {
+            "answer_is_ordered_item_list": list_result,
+            "all_precedence_constraints_hold": matches,
+            "acyclic_model_verified": expected is not None,
+            "external_resources_used": False,
+        }
+        return TraceVerification(
+            accepted=bool(matches),
+            reward=1.0 if matches else -0.65,
+            result_code="verified_partial_order" if matches else "rejected_partial_order",
+            checks=checks,
+            expected=expected,
+        )
+
+    if task.family == "boolean_case_analysis" and task.goal == "prove_existential_relation":
+        expected, case_count = _expected_boolean_entailment(task)
+        boolean_result = isinstance(trace.answer, bool)
+        matches = boolean_result and expected is not None and trace.answer is expected
+        checks = {
+            "answer_is_boolean": boolean_result,
+            "all_unknown_assignments_evaluated": case_count > 0,
+            "entailment_matches_independent_case_analysis": matches,
+            "external_resources_used": False,
+        }
+        return TraceVerification(
+            accepted=bool(matches),
+            reward=1.0 if matches else -0.65,
+            result_code=(
+                "verified_boolean_entailment" if matches else "rejected_boolean_entailment"
+            ),
             checks=checks,
             expected=expected,
         )

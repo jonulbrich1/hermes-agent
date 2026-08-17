@@ -35,6 +35,11 @@ Rules:
 - For a self-contained task, propose closed_world, sufficient_premises,
   reasoning_family, reasoning_goal, and structural_constraints. Express only
   premises and relationships. Never include or calculate an answer.
+- An unknown task-local value is a variable, not automatically missing evidence.
+  Preserve it explicitly, for example with value=null, when finite case analysis
+  can determine whether a conclusion holds for every allowed assignment.
+- Do not request web or memory evidence to resolve a variable that the puzzle
+  explicitly defines as unknown. Recommend Organic Processor case analysis.
 - Every entities item must be an object with text (required), plus optional
   entity_type, canonical_uid, and confidence. Example:
   {"text": "pizza", "entity_type": "food", "confidence": 0.9}
@@ -80,6 +85,13 @@ The JSON object must use these fields:
 
 You only interpret and normalize the user request. The deterministic Organic
 Interaction Gate authorizes the final route.
+
+Unknown handling:
+- Unknown values supplied by a closed-world puzzle are variables to preserve as
+  null-valued premises, not factual gaps to research.
+- A puzzle can have sufficient premises even with unknown variables when the
+  requested conclusion can be tested across every bounded assignment.
+- Never silently choose a value for an unknown variable.
 """.strip()
 
 _FAST_RESPONSE_INSTRUCTIONS = """
@@ -96,6 +108,8 @@ objective and output. Do not decide whether facts are true, whether reasoning is
 valid, or whether memory should be trusted. Those decisions belong to validators.
 Set needs_tool_loop only when another authorized Organic tool pass could fill a
 specific missing part. Return the typed review without chain-of-thought.
+An explicitly unknown closed-world variable is not a missing fact when an
+external validator has accepted exhaustive case analysis.
 """.strip()
 
 _PRESENTATION_INSTRUCTIONS = """
@@ -558,14 +572,14 @@ class PydanticAISemanticInterface:
             marker in intent_key or marker in capabilities_text
             for marker in ("logic", "puzzle", "arithmetic", "math_reason", "deduct")
         )
+        structural = infer_structural_fields(request)
         if (
-            (looks_self_contained_reasoning(request) or model_identified_reasoning)
+            (structural or looks_self_contained_reasoning(request) or model_identified_reasoning)
             and not data.get("requires_current_external_info")
         ):
             capabilities = list(data.get("required_capabilities") or [])
             if "logical_reasoning" not in capabilities:
                 capabilities.append("logical_reasoning")
-            structural = infer_structural_fields(request)
             data.update(
                 {
                     "original_request": request,

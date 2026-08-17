@@ -27,6 +27,7 @@ _NUMBERS = {
     "ten": 10,
 }
 _COUNT = r"(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+_NAME = r"[A-Z][A-Za-z0-9_-]*"
 
 
 def _number(value: str) -> int:
@@ -34,10 +35,116 @@ def _number(value: str) -> int:
     return int(lowered) if lowered.isdigit() else _NUMBERS[lowered]
 
 
+def _infer_partial_order(text: str) -> dict[str, Any] | None:
+    if not re.search(r"\b(?:finishing\s+order|finish(?:ed|ing)?\s+order|what\s+was\s+the\s+order)\b", text, re.IGNORECASE):
+        return None
+    edges: list[tuple[str, str]] = []
+    before_pattern = re.compile(
+        rf"\b(?P<subject>{_NAME})\s+(?:(?i:finish(?:ed|es|ing)?|is)\s+)?"
+        rf"(?i:before)\s+(?P<before>{_NAME})"
+        rf"(?:\s*,?\s*(?i:but\s+behind)\s+(?P<behind>{_NAME}))?",
+    )
+    for match in before_pattern.finditer(text):
+        subject = match.group("subject")
+        edges.append((subject, match.group("before")))
+        if match.group("behind"):
+            edges.append((match.group("behind"), subject))
+    after_pattern = re.compile(
+        rf"\b(?P<subject>{_NAME})\s+(?:(?i:finish(?:ed|es|ing)?|is)\s+)?"
+        rf"(?i:after|behind)\s+(?P<after>{_NAME})",
+    )
+    for match in after_pattern.finditer(text):
+        edges.append((match.group("after"), match.group("subject")))
+    unique_edges = list(dict.fromkeys(edges))
+    if len(unique_edges) < 2:
+        return None
+    return {
+        "closed_world": True,
+        "sufficient_premises": True,
+        "reasoning_family": "partial_order",
+        "reasoning_goal": "linearize_order",
+        "structural_constraints": [
+            {"kind": "precedes", "before": before, "after": after}
+            for before, after in unique_edges
+        ],
+    }
+
+
+def _infer_boolean_case_analysis(text: str) -> dict[str, Any] | None:
+    lowered = text.lower()
+    if not (
+        "married person" in lowered
+        and "unmarried person" in lowered
+        and "looking at" in lowered
+    ):
+        return None
+    relations = [
+        {"kind": "directed_relation", "subject": subject, "predicate": "looking_at", "object": obj}
+        for subject, obj in re.findall(
+            rf"\b({_NAME})\s+is\s+looking\s+at\s+({_NAME})\b",
+            text,
+        )
+    ]
+    unknowns = set(
+        re.findall(
+            rf"\b(?:we\s+)?(?:do\s+not|don['\u2019]?t)\s+know\s+if\s+({_NAME})\s+is\s+married\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    negatives = set(
+        re.findall(
+            rf"\b({_NAME})\s+is\s+not(?:\s+married)?\b",
+            text,
+        )
+    )
+    positives = set(
+        re.findall(rf"\b({_NAME})\s+is\s+married\b", text)
+    ) - unknowns - negatives
+    properties = [
+        {"kind": "entity_property", "entity": entity, "property": "married", "value": True}
+        for entity in sorted(positives)
+    ]
+    properties.extend(
+        {"kind": "entity_property", "entity": entity, "property": "married", "value": False}
+        for entity in sorted(negatives)
+    )
+    properties.extend(
+        {"kind": "entity_property", "entity": entity, "property": "married", "value": None}
+        for entity in sorted(unknowns)
+    )
+    if len(relations) < 1 or len(properties) < 2:
+        return None
+    return {
+        "closed_world": True,
+        "sufficient_premises": True,
+        "reasoning_family": "boolean_case_analysis",
+        "reasoning_goal": "prove_existential_relation",
+        "structural_constraints": [
+            *relations,
+            *properties,
+            {
+                "kind": "exists_relation_by_property",
+                "predicate": "looking_at",
+                "subject_property": "married",
+                "subject_value": True,
+                "object_property": "married",
+                "object_value": False,
+            },
+        ],
+    }
+
+
 def infer_structural_fields(request: str) -> dict[str, Any] | None:
     """Compile recognized task-local language without solving the task."""
     text = " ".join(request.strip().split())
     lowered = text.lower()
+    partial_order = _infer_partial_order(text)
+    if partial_order:
+        return partial_order
+    boolean_case = _infer_boolean_case_analysis(text)
+    if boolean_case:
+        return boolean_case
     front = re.search(rf"\b(?P<n>{_COUNT})\s+[a-z][a-z-]*s?\s+in front of\b", lowered)
     behind = re.search(rf"\b(?P<n>{_COUNT})\s+[a-z][a-z-]*s?\s+behind\b", lowered)
     middle = re.search(r"\b(?:a|an|one)\s+[a-z][a-z-]*\s+in the middle\b", lowered)

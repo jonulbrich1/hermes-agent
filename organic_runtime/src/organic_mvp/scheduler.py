@@ -11,10 +11,10 @@ from typing import Any, Callable, Optional
 from .config import AppConfig
 from .core import BaseCore
 from .db import MemoryDB
-from .evidence import EvidenceBroker, EvidenceDocument, SearchResult
+from .evidence import EvidenceBroker, EvidenceDocument
 from .loggingx import AuditLog
 from .memory import MemoryCompiler
-from .util import compact_json, content_words, normalize_label, stable_uid, utcnow
+from .util import compact_json, utcnow
 
 
 class OrganicEngine:
@@ -22,7 +22,8 @@ class OrganicEngine:
 
     def __init__(self, root: Path, config: AppConfig, db: MemoryDB, core: BaseCore,
                  broker: EvidenceBroker, memory: MemoryCompiler, logger: logging.Logger,
-                 audit: AuditLog, processor: Any | None = None):
+                 audit: AuditLog, processor: Any | None = None,
+                 processor_growth_callback: Callable[[], dict[str, Any]] | None = None):
         self.root = root
         self.config = config
         self.db = db
@@ -32,6 +33,7 @@ class OrganicEngine:
         self.logger = logger
         self.audit = audit
         self.processor = processor
+        self._processor_growth_callback = processor_growth_callback
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -39,6 +41,7 @@ class OrganicEngine:
         self._current_task_id: Optional[str] = None
         self._manual_growth_budget = 0
         self._completed_idle_cycles = 0
+        self._completed_processor_growth_cycles = 0
         self._external_user_active = False
         self._review_callback: Optional[Callable[[str], str]] = None
         self._seed_precreated_tasks()
@@ -188,6 +191,7 @@ class OrganicEngine:
             current = self._current_task_id
             budget = self._manual_growth_budget
             idle_count = self._completed_idle_cycles
+            processor_idle_count = self._completed_processor_growth_cycles
             external_user_active = self._external_user_active
         return {
             'running': bool(self._thread and self._thread.is_alive()),
@@ -195,6 +199,7 @@ class OrganicEngine:
             'idle_growth_enabled': bool(self.config.get('idle_growth_enabled', False)),
             'manual_growth_budget': budget,
             'completed_idle_cycles': idle_count,
+            'completed_processor_growth_cycles': processor_idle_count,
             'external_user_active': external_user_active,
             'executive': self.core.status(),
             'core': self.core.status(),
@@ -224,6 +229,13 @@ class OrganicEngine:
                 now = time.time()
                 if (should_idle or manual) and now - last_idle_attempt >= idle_delay:
                     last_idle_attempt = now
+                    if self._processor_growth_callback is not None:
+                        processor_growth = self._processor_growth_callback() or {}
+                        if processor_growth.get('attempted'):
+                            with self._state_lock:
+                                self._completed_processor_growth_cycles += 1
+                            self.audit.write('processor_idle_growth_cycle', **processor_growth)
+                            continue
                     created = self._create_idle_growth_task()
                     if created:
                         continue

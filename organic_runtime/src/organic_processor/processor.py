@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,12 +44,35 @@ INITIAL_EDGE_WEIGHTS = {
     "START->SELECT_GROUNDED_CANDIDATES": 0.80,
 }
 
+DISCOVERABLE_PATHWAYS: tuple[dict[str, Any], ...] = (
+    {
+        "name": "DISCOVER_PARTIAL_ORDER_LINEARIZATION",
+        "goal": "linearize_order",
+        "required_kinds": {"precedes"},
+        "operators": ["COLLECT_PARTIAL_ORDER", "TOPOLOGICAL_LINEARIZE", "EMIT_ORDER"],
+    },
+    {
+        "name": "DISCOVER_BOOLEAN_CASE_ENTAILMENT",
+        "goal": "prove_existential_relation",
+        "required_kinds": {
+            "directed_relation",
+            "entity_property",
+            "exists_relation_by_property",
+        },
+        "operators": [
+            "ENUMERATE_UNKNOWN_ASSIGNMENTS",
+            "EVALUATE_EXISTENTIAL_RELATION",
+            "EMIT_ENTAILMENT",
+        ],
+    },
+)
+
 
 class OrganicProcessor:
     """Bounded adaptive structural processor with no external-resource access."""
 
     mode = "bounded_structural_processor"
-    version = "0.4.0"
+    version = "0.5.0"
 
     def __init__(
         self,
@@ -71,6 +95,11 @@ class OrganicProcessor:
             "failure_counts": {},
             "feedback_source_counts": {},
             "composites": {},
+            "learned_pathways": {},
+            "growth_frontier": {},
+            "growth_event_count": 0,
+            "resolved_gap_count": 0,
+            "last_growth_result": None,
             "experience_count": 0,
         }
 
@@ -79,6 +108,8 @@ class OrganicProcessor:
             try:
                 loaded = json.loads(self.state_path.read_text(encoding="utf-8"))
                 if loaded.get("schema_version") == 1:
+                    for key, default in self._fresh_state().items():
+                        loaded.setdefault(key, copy.deepcopy(default))
                     return loaded
             except (OSError, ValueError, TypeError):
                 pass
@@ -115,9 +146,16 @@ class OrganicProcessor:
             "bounded_arithmetic": "evaluate_expression",
             "grounded_evidence_selection": "select_supported_items",
         }.get(task.family)
-        if expected_goal != task.goal:
-            return {}
-        paths = dict(SEED_PATHWAYS.get(task.family, {}))
+        paths = (
+            dict(SEED_PATHWAYS.get(task.family, {}))
+            if expected_goal == task.goal
+            else {}
+        )
+        learned = self.state.get("learned_pathways", {}).get(task.capability_signature())
+        if isinstance(learned, dict) and learned.get("operators"):
+            paths[f"GROWN:{learned.get('name') or 'VERIFIED_PATHWAY'}"] = list(
+                learned["operators"]
+            )
         composite = self.state.get("composites", {}).get(task.signature())
         if isinstance(composite, dict) and composite.get("operators"):
             paths[f"COMPOSITE:{composite['name']}"] = list(composite["operators"])
@@ -133,7 +171,13 @@ class OrganicProcessor:
             trace.answer = state.get("answer")
             trace.valid = state.get(
                 "model_valid",
-                state.get("expression_valid", state.get("selection_valid")),
+                state.get(
+                    "expression_valid",
+                    state.get(
+                        "selection_valid",
+                        state.get("order_valid", state.get("entailment_valid")),
+                    ),
+                ),
             )
         except (KeyError, OperatorError, SyntaxError, ValueError, TypeError, ZeroDivisionError) as exc:
             trace.intermediate.append({"error": f"{type(exc).__name__}: {exc}"})
@@ -162,6 +206,155 @@ class OrganicProcessor:
                 confidence=min(0.99, max(0.05, self._path_score(operators) / 4.0)),
                 trace=trace,
             )
+
+    @staticmethod
+    def _timestamp() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def register_gap(self, task: StructuralTask, reason: str) -> str:
+        with self._lock:
+            key = task.capability_signature()
+            frontier = self.state["growth_frontier"]
+            now = self._timestamp()
+            entry = frontier.get(key)
+            if not isinstance(entry, dict):
+                if len(frontier) >= 64:
+                    oldest = min(
+                        frontier,
+                        key=lambda item: str(frontier[item].get("last_seen") or ""),
+                    )
+                    frontier.pop(oldest, None)
+                entry = {
+                    "capability_signature": key,
+                    "task": json.loads(json.dumps(task.to_dict(), default=str)),
+                    "first_seen": now,
+                    "attempts": 0,
+                    "status": "PENDING",
+                }
+                frontier[key] = entry
+            entry["last_seen"] = now
+            entry["reason"] = str(reason or "No verified pathway")[:500]
+            if entry.get("status") != "RESOLVED":
+                entry["status"] = "PENDING"
+            self.state["growth_event_count"] = int(self.state.get("growth_event_count", 0)) + 1
+            self.state["last_growth_result"] = {
+                "capability_signature": key,
+                "status": "GAP_REGISTERED",
+                "at": now,
+            }
+            self._save_state(self.state)
+            return key
+
+    def discover(self, task: StructuralTask, max_candidates: int = 8) -> ProcessResult:
+        with self._lock:
+            kinds = {str(item.get("kind") or "") for item in task.constraints}
+            candidates = [
+                template
+                for template in DISCOVERABLE_PATHWAYS
+                if template["goal"] == task.goal
+                and set(template["required_kinds"]).issubset(kinds)
+            ][: max(1, min(int(max_candidates), 8))]
+            if not candidates:
+                return ProcessResult(
+                    status="CAPABILITY_GAP",
+                    capability_gap=(
+                        "No approved operator composition matches "
+                        f"{task.capability_signature()}"
+                    ),
+                )
+            return ProcessResult(
+                status="EXPLORED",
+                alternatives=[
+                    self._execute(task, str(item["name"]), list(item["operators"]))
+                    for item in candidates
+                ],
+            )
+
+    def promote_discovered(self, task: StructuralTask, trace: ProcessTrace) -> None:
+        with self._lock:
+            key = task.capability_signature()
+            now = self._timestamp()
+            self.state["learned_pathways"][key] = {
+                "name": trace.pathway,
+                "family": task.family,
+                "goal": task.goal,
+                "operators": list(trace.operators),
+                "score": round(self._path_score(trace.operators), 6),
+                "discovered_at": now,
+                "verification_required": True,
+            }
+            entry = self.state["growth_frontier"].setdefault(
+                key,
+                {
+                    "capability_signature": key,
+                    "task": task.to_dict(),
+                    "first_seen": now,
+                    "attempts": 0,
+                },
+            )
+            entry.update(
+                {
+                    "status": "RESOLVED",
+                    "resolved_at": now,
+                    "selected_pathway": trace.pathway,
+                    "operators": list(trace.operators),
+                    "attempts": int(entry.get("attempts", 0)) + 1,
+                }
+            )
+            self.state["resolved_gap_count"] = int(self.state.get("resolved_gap_count", 0)) + 1
+            self.state["growth_event_count"] = int(self.state.get("growth_event_count", 0)) + 1
+            self.state["last_growth_result"] = {
+                "capability_signature": key,
+                "status": "RESOLVED",
+                "pathway": trace.pathway,
+                "at": now,
+            }
+            self._save_state(self.state)
+
+    def record_growth_failure(self, task: StructuralTask, reason: str) -> None:
+        with self._lock:
+            key = task.capability_signature()
+            now = self._timestamp()
+            entry = self.state["growth_frontier"].setdefault(
+                key,
+                {
+                    "capability_signature": key,
+                    "task": task.to_dict(),
+                    "first_seen": now,
+                    "attempts": 0,
+                },
+            )
+            attempts = int(entry.get("attempts", 0)) + 1
+            entry.update(
+                {
+                    "attempts": attempts,
+                    "last_attempt": now,
+                    "status": "WAITING_FOR_PRIMITIVE" if attempts >= 2 else "PENDING",
+                    "last_error": str(reason or "No candidate passed external verification")[:500],
+                }
+            )
+            self.state["growth_event_count"] = int(self.state.get("growth_event_count", 0)) + 1
+            self.state["last_growth_result"] = {
+                "capability_signature": key,
+                "status": entry["status"],
+                "at": now,
+            }
+            self._save_state(self.state)
+
+    def next_growth_task(self) -> StructuralTask | None:
+        with self._lock:
+            pending = [
+                entry
+                for entry in self.state.get("growth_frontier", {}).values()
+                if isinstance(entry, dict) and entry.get("status") == "PENDING"
+            ]
+            if not pending:
+                return None
+            pending.sort(key=lambda item: str(item.get("first_seen") or ""))
+            try:
+                return StructuralTask.from_dict(dict(pending[0]["task"]))
+            except (KeyError, TypeError, ValueError):
+                return None
 
     def learn(self, trace: ProcessTrace, reward: float, feedback_source: str) -> None:
         with self._lock:
@@ -203,6 +396,13 @@ class OrganicProcessor:
 
     def status(self) -> dict[str, Any]:
         with self._lock:
+            learned = self.state.get("learned_pathways", {})
+            frontier = self.state.get("growth_frontier", {})
+            learned_families = {
+                str(item.get("family"))
+                for item in learned.values()
+                if isinstance(item, dict) and item.get("family")
+            }
             return {
                 "mode": self.mode,
                 "version": self.version,
@@ -211,6 +411,16 @@ class OrganicProcessor:
                 "state_cap_bytes": self.max_state_bytes,
                 "experience_count": int(self.state.get("experience_count", 0)),
                 "composite_count": len(self.state.get("composites", {})),
-                "supported_families": sorted(SEED_PATHWAYS),
+                "learned_pathway_count": len(learned),
+                "growth_frontier_count": sum(
+                    1
+                    for item in frontier.values()
+                    if isinstance(item, dict) and item.get("status") != "RESOLVED"
+                ),
+                "resolved_gap_count": int(self.state.get("resolved_gap_count", 0)),
+                "growth_event_count": int(self.state.get("growth_event_count", 0)),
+                "last_growth_result": copy.deepcopy(self.state.get("last_growth_result")),
+                "supported_families": sorted(set(SEED_PATHWAYS) | learned_families),
+                "discoverable_operator_compositions": len(DISCOVERABLE_PATHWAYS),
                 "external_resource_access": False,
             }

@@ -140,8 +140,10 @@ def looks_self_contained_reasoning(request: str) -> bool:
             "solve this puzzle",
             "solve the puzzle",
             "deduce ",
-            "riddle:",
-        )
+              "riddle:",
+              "finishing order",
+              "married person looking at an unmarried person",
+          )
     ):
         return True
     if re.search(r"\b\d+(?:\.\d+)?\s*[+*/-]\s*\d+(?:\.\d+)?\b", text):

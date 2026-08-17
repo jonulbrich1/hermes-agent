@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
+from typing import Any
 
 from .config import AppConfig
 from .db import MemoryDB
@@ -18,7 +19,8 @@ from .util import sha256_file, utcnow
 class ReviewExporter:
     def __init__(self, root: Path, platform_kind: str, config: AppConfig, db: MemoryDB,
                  memory: MemoryCompiler, logger: logging.Logger, audit: AuditLog,
-                 trace_dir: Path | None = None):
+                 trace_dir: Path | None = None,
+                 runtime_metadata: dict[str, Any] | None = None):
         self.root = root
         self.platform_kind = platform_kind
         self.config = config
@@ -27,6 +29,7 @@ class ReviewExporter:
         self.logger = logger
         self.audit = audit
         self.trace_dir = trace_dir.expanduser().resolve() if trace_dir else None
+        self.runtime_metadata = dict(runtime_metadata or {})
         self.local_review_dir = root / 'review_packages'
         self.local_review_dir.mkdir(parents=True, exist_ok=True)
 
@@ -69,6 +72,7 @@ class ReviewExporter:
                 'processor_state_bytes': sum(p.stat().st_size for p in (self.root / 'data' / 'processor').rglob('*') if p.is_file()) if (self.root / 'data' / 'processor').exists() else 0,
                 'run_result_count': len(list((self.root / 'run_results').glob('*.json'))) if (self.root / 'run_results').exists() else 0,
                 'trace_file_count': len(list(self.trace_dir.rglob('*.jsonl'))) if self.trace_dir and self.trace_dir.exists() else 0,
+                'effective_runtime': self.runtime_metadata,
             }
             (stage / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
 
@@ -150,6 +154,10 @@ class ReviewExporter:
 
             public_cfg = self.config.public_snapshot()
             (stage / 'config_redacted.json').write_text(json.dumps(public_cfg, indent=2, ensure_ascii=False), encoding='utf-8')
+            (stage / 'integration_status.json').write_text(
+                json.dumps(self.runtime_metadata, indent=2, ensure_ascii=False),
+                encoding='utf-8',
+            )
 
             temp_zip = Path(td) / name
             with zipfile.ZipFile(temp_zip, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
