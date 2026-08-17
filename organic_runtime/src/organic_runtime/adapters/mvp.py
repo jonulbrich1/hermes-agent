@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+import hashlib
+import re
 import shutil
+from pathlib import Path
+from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 from organic_mvp.config import AppConfig
 from organic_mvp.core import build_core
@@ -14,10 +18,16 @@ from organic_mvp.loggingx import AuditLog, setup_logging
 from organic_mvp.memory import MemoryCompiler
 from organic_mvp.review import ReviewExporter
 from organic_mvp.scheduler import OrganicEngine
-from organic_mvp.util import norm_space, stable_uid, utcnow
+from organic_mvp.util import content_words, norm_space, stable_uid, utcnow
+from organic_processor import LegacyLogicSeedAdapter, OrganicProcessor, StructuralTask
 
 from organic_runtime.config import RuntimeSettings
 from organic_runtime.contracts import (
+    ActiveWeave,
+    ActiveWeaveItem,
+    ActiveWeaveScope,
+    ActiveWeaveTrust,
+    CognitiveResourcePlan,
     CoreRequest,
     CoreResult,
     GrowthEvidence,
@@ -25,6 +35,9 @@ from organic_runtime.contracts import (
     IntentEnvelope,
     PreflightKnowledge,
 )
+from organic_runtime.instance_lock import RuntimeDataLock
+from organic_runtime.cognition import build_active_weave, compile_structural_task, verify_trace
+from organic_runtime.semantic.base import clarification_subject
 
 
 KNOWN_BOOTSTRAP_ANSWERS = {
@@ -58,53 +71,71 @@ class MvpOrganicSystem:
         for rel in ("data/logs", "data/source_cache", "data/core", "review_packages", "run_results"):
             (self.root / rel).mkdir(parents=True, exist_ok=True)
 
-        self.config = AppConfig(self.root)
-        public: dict[str, Any] = {
-            "idle_growth_enabled": settings.idle_growth_enabled,
-            "idle_delay_seconds": settings.idle_delay_seconds,
-            "web_provider": settings.web_provider,
-            "allow_private_web": settings.allow_private_web,
-            "semantic_agent_enabled": False,
-            "auto_review_user_tasks": False,
-            "auto_review_idle_every": 0,
-            "interaction_fetch_limit": 2,
-            "interaction_search_results": 4,
-            "max_sentences_per_source": 350,
-        }
-        if settings.local_corpus_dir:
-            public["local_corpus_dir"] = str(settings.local_corpus_dir)
-        self.config.update(public=public)
+        self._closed = False
+        self._instance_lock = RuntimeDataLock(self.root / "data" / "runtime.lock")
+        self._instance_lock.acquire()
 
-        self.logger = setup_logging(self.root / "data" / "logs" / "debug.log", verbose=False)
-        self.audit = AuditLog(self.root / "data" / "logs" / "audit.jsonl")
-        self.db = MemoryDB(self.root / "data" / "organic_memory.sqlite")
-        self.core = build_core(self.config, self.db, self.logger)
-        self.broker = EvidenceBroker(self.root, self.config, self.db, self.logger, self.audit)
-        self.memory = MemoryCompiler(self.db, self.core, self.logger, self.audit)
-        self.review = ReviewExporter(
-            self.root,
-            "windows",
-            self.config,
-            self.db,
-            self.memory,
-            self.logger,
-            self.audit,
-        )
-        self._recover_interrupted_tasks()
-        self.engine = OrganicEngine(
-            self.root,
-            self.config,
-            self.db,
-            self.core,
-            self.broker,
-            self.memory,
-            self.logger,
-            self.audit,
-        )
-        self.core_calls = 0
-        self.growth_calls = 0
-        self.engine.start()
-        self._ensure_bootstrap_growth_task()
+        try:
+            self.config = AppConfig(self.root)
+            public: dict[str, Any] = {
+                "idle_growth_enabled": settings.idle_growth_enabled,
+                "idle_delay_seconds": settings.idle_delay_seconds,
+                "web_provider": settings.web_provider,
+                "allow_private_web": settings.allow_private_web,
+                "semantic_agent_enabled": False,
+                "auto_review_user_tasks": False,
+                "auto_review_idle_every": 0,
+                "interaction_fetch_limit": 2,
+                "interaction_search_results": 4,
+                "max_sentences_per_source": 350,
+            }
+            if settings.local_corpus_dir:
+                public["local_corpus_dir"] = str(settings.local_corpus_dir)
+            self.config.update(public=public)
+
+            self.logger = setup_logging(self.root / "data" / "logs" / "debug.log", verbose=False)
+            self.audit = AuditLog(self.root / "data" / "logs" / "audit.jsonl")
+            self.db = MemoryDB(self.root / "data" / "organic_memory.sqlite")
+            self.executive = build_core(self.config, self.db, self.logger)
+            self.core = self.executive
+            self.processor = OrganicProcessor(
+                self.root / "data" / "processor" / "processor_state.json",
+                max_state_bytes=min(int(self.config.get("max_core_bytes", 5 * 1024**3)), 16 * 1024**2),
+            )
+            self.legacy_processor = LegacyLogicSeedAdapter(
+                self.root / "runtime" / "legacy_seed" / "v0.2.1"
+            )
+            self.broker = EvidenceBroker(self.root, self.config, self.db, self.logger, self.audit)
+            self.memory = MemoryCompiler(self.db, self.executive, self.logger, self.audit)
+            self.review = ReviewExporter(
+                self.root,
+                "windows",
+                self.config,
+                self.db,
+                self.memory,
+                self.logger,
+                self.audit,
+                trace_dir=settings.trace_dir,
+            )
+            self._recover_interrupted_tasks()
+            self.engine = OrganicEngine(
+                self.root,
+                self.config,
+                self.db,
+                self.executive,
+                self.broker,
+                self.memory,
+                self.logger,
+                self.audit,
+                processor=self.processor,
+            )
+            self.core_calls = 0
+            self.growth_calls = 0
+            self.engine.start()
+            self._ensure_bootstrap_growth_task()
+        except BaseException:
+            self._instance_lock.release()
+            raise
 
     def _recover_interrupted_tasks(self) -> None:
         rows = self.db.query("SELECT * FROM tasks WHERE status='ACTIVE'")
@@ -134,15 +165,48 @@ class MvpOrganicSystem:
             self.audit.write("interrupted_tasks_recovered", count=len(rows))
 
     def close(self) -> None:
-        self.engine.stop()
-        self._recover_interrupted_tasks()
-        self.db.close()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.engine.stop()
+            self._recover_interrupted_tasks()
+            self.db.close()
+        finally:
+            self._instance_lock.release()
 
     def set_user_active(self, active: bool) -> None:
         self.engine.set_external_user_active(active)
 
     def provider_status(self) -> dict[str, Any]:
         return self.broker.provider_status()
+
+    def record_resource_plan_outcome(
+        self,
+        plan: CognitiveResourcePlan,
+        success: bool,
+        metadata: dict[str, Any],
+    ) -> None:
+        self.db.record_planner_outcome(
+            plan_id=plan.plan_id,
+            request_id=plan.request_id,
+            task_signature=plan.task_signature,
+            resources=[step.model_dump(mode="json") for step in plan.steps],
+            world_mode=plan.world_mode.value,
+            success=success,
+            cost_units=float(metadata.get("cost_units", 0.0) or 0.0),
+            duration_ms=float(metadata.get("duration_ms", 0.0) or 0.0),
+            result_code=str(metadata.get("result_code") or "UNKNOWN"),
+            metadata={
+                **metadata,
+                "route": plan.route.value,
+                "processor_capabilities": plan.processor_capabilities,
+                "prohibited_resources": [
+                    resource.value for resource in plan.prohibited_resources
+                ],
+                "planning_policy": plan.metadata.get("planning_policy"),
+            },
+        )
 
     def export_review(self, reason: str = "manual") -> str:
         path = Path(self.review.export(reason))
@@ -281,6 +345,24 @@ class MvpOrganicSystem:
 
     def preflight(self, envelope: IntentEnvelope) -> PreflightKnowledge:
         text = envelope.normalized_request.lower()
+        if envelope.self_contained_reasoning:
+            return PreflightKnowledge(
+                known_route=False,
+                confidence=1.0,
+                requires_research=False,
+                metadata={
+                    "reasoning_mode": "self_contained",
+                    "active_weave_claim_count": 0,
+                    "memory_lookup_required": False,
+                },
+            )
+        if envelope.intent == "clarification_needed":
+            return PreflightKnowledge(
+                known_route=False,
+                confidence=0.0,
+                requires_research=False,
+                metadata={"clarification_required": True, "active_weave_claim_count": 0},
+            )
         for phrase, (memory_id, answer) in KNOWN_BOOTSTRAP_ANSWERS.items():
             if phrase in text:
                 return PreflightKnowledge(
@@ -292,11 +374,7 @@ class MvpOrganicSystem:
                 )
 
         raw_evidence = self.memory.retrieve(envelope.normalized_request, limit=8)
-        evidence = [
-            item
-            for item in raw_evidence
-            if float(item.get("retrieval_score", 0.0) or 0.0) >= ACTIVE_WEAVE_MIN_RETRIEVAL_SCORE
-        ]
+        evidence = self._active_weave_evidence(envelope, raw_evidence)
         raw_top = max(
             (float(e.get("retrieval_score", 0.0) or 0.0) for e in raw_evidence),
             default=0.0,
@@ -334,6 +412,52 @@ class MvpOrganicSystem:
         if not preflight.direct_answer:
             raise RuntimeError("Known route requested without a direct answer.")
         return preflight.direct_answer
+
+    @staticmethod
+    def _entity_terms(envelope: IntentEnvelope) -> set[str]:
+        return {
+            term
+            for entity in envelope.entities
+            if entity.confidence >= 0.65
+            for term in content_words(entity.text)
+        }
+
+    @classmethod
+    def _active_weave_evidence(
+        cls,
+        envelope: IntentEnvelope,
+        raw_evidence: list[dict[str, Any]],
+        min_retrieval_score: float = ACTIVE_WEAVE_MIN_RETRIEVAL_SCORE,
+        require_entity_overlap: bool = True,
+    ) -> list[dict[str, Any]]:
+        entity_terms = cls._entity_terms(envelope)
+        evidence: list[dict[str, Any]] = []
+        for item in raw_evidence:
+            score = float(item.get("retrieval_score", 0.0) or 0.0)
+            if score < min_retrieval_score:
+                continue
+            if require_entity_overlap and entity_terms:
+                evidence_text = " ".join(
+                    [
+                        str(item.get("text") or ""),
+                        *[
+                            " ".join(
+                                str(relation.get(key) or "")
+                                for key in (
+                                    "subject_label",
+                                    "predicate",
+                                    "object_label",
+                                    "object_text",
+                                )
+                            )
+                            for relation in (item.get("relations") or [])
+                        ],
+                    ]
+                )
+                if not entity_terms.intersection(content_words(evidence_text)):
+                    continue
+            evidence.append(item)
+        return evidence
 
     def _create_runtime_task(self, request: CoreRequest) -> str:
         envelope = request.envelope
@@ -378,14 +502,25 @@ class MvpOrganicSystem:
         source_count = len(result.get("sources") or [])
         growth_evidence_count = len(growth_result.evidence) if growth_result else 0
         requires_grounding = bool(
-            request.envelope.requires_current_external_info
+            request.envelope.intent not in {
+                "simple_conversation",
+                "internal_state",
+                "clarification_needed",
+            }
+            or request.envelope.requires_current_external_info
             or request.preflight.requires_research
             or growth_result is not None
         )
         has_answer = bool(answer)
+        relevant_evidence = bool(result.get("active_weave_relevant"))
         grounded_answer_used = has_answer and (
             not requires_grounding
-            or (confidence >= 0.50 and (source_count > 0 or growth_evidence_count > 0) and not missing)
+            or (
+                confidence >= 0.50
+                and relevant_evidence
+                and (source_count > 0 or growth_evidence_count > 0)
+                and not missing
+            )
         )
         complete = has_answer and confidence >= 0.50 and grounded_answer_used
         needs_retry = requires_grounding and not grounded_answer_used and growth_result is None
@@ -397,6 +532,7 @@ class MvpOrganicSystem:
             "missing": missing,
             "source_count": source_count,
             "growth_evidence_count": growth_evidence_count,
+            "relevant_evidence": relevant_evidence,
             "grounded_answer_used": grounded_answer_used,
             "complete": complete,
             "needs_retry": needs_retry,
@@ -411,13 +547,186 @@ class MvpOrganicSystem:
         )
         self.db.add_task_event(task_id, "SEMANTIC_COMPLETENESS_REVIEW", message, review)
 
-    def _answer_with_core(self, goal: str, task_id: str) -> dict[str, Any]:
-        raw_evidence = self.memory.retrieve(goal, limit=int(self.config.get("max_active_weave_claims", 18)))
+    def _answer_with_core(
+        self,
+        envelope: IntentEnvelope,
+        task_id: str,
+        growth_result: GrowthResult | None = None,
+    ) -> dict[str, Any]:
+        raw_evidence = self.memory.retrieve(
+            envelope.normalized_request,
+            limit=int(self.config.get("max_active_weave_claims", 18)),
+        )
+        selection_threshold = ACTIVE_WEAVE_MIN_RETRIEVAL_SCORE
+        fresh_growth = bool(growth_result and growth_result.evidence)
+        if growth_result and growth_result.evidence:
+            fresh_source_ids = {item.source_id for item in growth_result.evidence}
+            raw_evidence = self.memory.retrieve_from_sources(
+                envelope.normalized_request,
+                fresh_source_ids,
+                limit=int(self.config.get("max_active_weave_claims", 18)),
+            )
+            selection_threshold = 0.22
+        candidate_evidence = self._active_weave_evidence(
+            envelope,
+            raw_evidence,
+            min_retrieval_score=selection_threshold,
+            require_entity_overlap=True,
+        )
+        request_terms = set(content_words(envelope.normalized_request))
+        current_version_objective = bool(
+            {"release", "version"} & request_terms
+            and {"current", "latest", "newest", "recent", "stable"} & request_terms
+        )
+        selection_limit = 1 if current_version_objective else 4
+        structural_constraints = tuple(
+            {
+                "kind": "grounded_candidate",
+                "index": index,
+                "retrieval_score": float(item.get("retrieval_score", 0.0) or 0.0),
+                "confidence": float(item.get("confidence", 0.5) or 0.5),
+                "selection_threshold": selection_threshold,
+                "selection_limit": selection_limit,
+            }
+            for index, item in enumerate(candidate_evidence)
+        )
+        structural_task = StructuralTask(
+            family="grounded_evidence_selection",
+            goal="select_supported_items",
+            constraints=structural_constraints,
+        )
+        active_weave = ActiveWeave(
+            request_id=envelope.request_id,
+            family=structural_task.family,
+            goal=structural_task.goal,
+            items=[
+                ActiveWeaveItem(
+                    role="candidate_evidence",
+                    item_type="grounded_claim_reference",
+                    scope=ActiveWeaveScope.GROUNDED_MEMORY,
+                    trust=ActiveWeaveTrust.VALIDATED,
+                    provenance={
+                        "claim_id": item.get("claim_id"),
+                        "source_id": item.get("source_id"),
+                    },
+                    confidence=float(item.get("confidence", 0.5) or 0.5),
+                    uncertainty=max(0.0, 1.0 - float(item.get("confidence", 0.5) or 0.5)),
+                    payload=dict(structural_constraints[index]),
+                )
+                for index, item in enumerate(candidate_evidence)
+            ],
+            durable_memory_allowed=False,
+            external_resources_allowed=False,
+        )
+        state_before = self.processor.snapshot()
+        before_hash = hashlib.sha256(
+            json.dumps(state_before, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        started = perf_counter()
+        processor_result = self.processor.process(structural_task, explore=True)
+        attempts = list(processor_result.alternatives)
+        verified = [(trace, verify_trace(structural_task, trace)) for trace in attempts]
+        for trace, verification in verified:
+            self.processor.learn(trace, verification.reward, "grounded_result_validator")
+        selected_pair = next((pair for pair in verified if pair[1].accepted), None)
+        selected_trace = selected_pair[0] if selected_pair else None
+        selected_indexes = list(selected_trace.answer) if selected_trace else []
         evidence = [
-            item
-            for item in raw_evidence
-            if float(item.get("retrieval_score", 0.0) or 0.0) >= ACTIVE_WEAVE_MIN_RETRIEVAL_SCORE
+            dict(candidate_evidence[index])
+            for index in selected_indexes
+            if 0 <= index < len(candidate_evidence)
         ]
+        if fresh_growth:
+            # Drop malformed first-pass relations without discarding useful compiled
+            # relations from the same fresh sources.
+            requires_version_relation = current_version_objective
+            for item in evidence:
+                claim_versions = set(
+                    re.findall(r"\b\d+(?:\.\d+){1,3}\b", str(item.get("text") or ""))
+                )
+                item["relations"] = [
+                    relation
+                    for relation in (item.get("relations") or [])
+                    if not re.match(
+                        r"^(?:\d|of\b|to\b|from\b|for\b|with\b|in\b|on\b|at\b|by\b)",
+                        norm_space(
+                            str(relation.get("subject_label") or "")
+                        ).lower(),
+                    )
+                    and not re.match(
+                        r"^(?:of\b|to\b|from\b|for\b|with\b|in\b|on\b|at\b|by\b)",
+                        norm_space(
+                            str(
+                                relation.get("object_label")
+                                or relation.get("object_text")
+                                or ""
+                            )
+                        ).lower(),
+                    )
+                    and (
+                        not claim_versions
+                        or any(
+                            version
+                            in " ".join(
+                                str(relation.get(key) or "")
+                                for key in (
+                                    "subject_label",
+                                    "predicate",
+                                    "object_label",
+                                    "object_text",
+                                )
+                            )
+                            for version in claim_versions
+                        )
+                    )
+                    and (
+                        not requires_version_relation
+                        or bool(
+                            re.search(
+                                r"\b\d+(?:\.\d+){1,3}\b",
+                                " ".join(
+                                    str(relation.get(key) or "")
+                                    for key in (
+                                        "subject_label",
+                                        "predicate",
+                                        "object_label",
+                                        "object_text",
+                                    )
+                                ),
+                            )
+                        )
+                    )
+                ]
+        after_hash = hashlib.sha256(
+            json.dumps(self.processor.snapshot(), sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        self.db.record_processing_episode(
+            episode_id=str(uuid4()),
+            task_id=task_id,
+            request_id=envelope.request_id,
+            task_signature=structural_task.signature(),
+            active_weave=active_weave.model_dump(mode="json"),
+            attempts=[trace.to_dict() for trace in attempts],
+            selected_pathway=selected_trace.pathway if selected_trace else None,
+            selected_answer=selected_indexes,
+            accepted=selected_pair is not None,
+            result_code=(
+                selected_pair[1].result_code if selected_pair else "grounded_selection_capability_gap"
+            ),
+            rewards=[
+                {
+                    "pathway": trace.pathway,
+                    "reward": verification.reward,
+                    "accepted": verification.accepted,
+                }
+                for trace, verification in verified
+            ],
+            feedback_source="grounded_result_validator",
+            state_before_hash=before_hash,
+            state_after_hash=after_hash,
+            duration_ms=(perf_counter() - started) * 1000.0,
+            metadata={"external_resources_used_by_processor": False},
+        )
         self.db.add_task_event(
             task_id,
             "COGNITION_ACTIVE_WEAVE",
@@ -425,10 +734,38 @@ class MvpOrganicSystem:
             {
                 "claim_ids": [e.get("claim_id") for e in evidence],
                 "raw_claim_count": len(raw_evidence),
-                "min_retrieval_score": ACTIVE_WEAVE_MIN_RETRIEVAL_SCORE,
+                "min_retrieval_score": selection_threshold,
+                "processor_pathway": selected_trace.pathway if selected_trace else None,
+                "processor_operators": selected_trace.operators if selected_trace else [],
             },
         )
-        result = self.core.answer(goal, evidence)
+        result = self.core.answer(envelope.normalized_request, evidence)
+        result["grounded_version_tokens"] = list(
+            dict.fromkeys(
+                re.findall(
+                    r"\b\d+(?:\.\d+){1,3}\b",
+                    " ".join(
+                        f"{item.get('source_title') or ''} {item.get('text') or ''}"
+                        for item in evidence
+                    ),
+                )
+            )
+        )[:24]
+        result["active_weave_relevant"] = bool(evidence)
+        result["active_weave_entity_terms"] = sorted(self._entity_terms(envelope))
+        result["processor_cycles"] = [
+            {
+                "cycle": index,
+                "pathway": trace.pathway,
+                "operators": trace.operators,
+                "candidate_answer": trace.answer,
+                "satisfied": verification.accepted,
+                "validation_checks": verification.checks,
+            }
+            for index, (trace, verification) in enumerate(verified, start=1)
+        ]
+        result["processor_operators"] = selected_trace.operators if selected_trace else []
+        result["processor_capabilities"] = ["grounded_evidence_selection"]
         self.core_calls += 1
         self.db.add_task_event(
             task_id,
@@ -438,10 +775,296 @@ class MvpOrganicSystem:
         )
         return result
 
+    def _process_self_contained(self, request: CoreRequest, task_id: str) -> CoreResult:
+        plan = request.resource_plan
+        if plan is None:
+            raise RuntimeError("Self-contained processing requires an authorized resource plan.")
+        started = perf_counter()
+        plan_payload = plan.model_dump(mode="json")
+        self.db.add_task_event(
+            task_id,
+            "COGNITIVE_RESOURCE_PLAN",
+            f"Authorized closed-world plan {plan.plan_id}.",
+            plan_payload,
+        )
+        self.db.add_task_event(
+            task_id,
+            "COGNITION_CONSTRAINT_WEAVE",
+            "Compiling a task-local structural Active Weave.",
+            {"task_signature": plan.task_signature, "living_memory_claim_ids": []},
+        )
+
+        structural_task = compile_structural_task(request.envelope)
+        active_weave = build_active_weave(request.envelope, structural_task) if structural_task else None
+        state_before = self.processor.snapshot()
+        state_before_hash = hashlib.sha256(
+            json.dumps(state_before, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        processor_result = (
+            self.processor.process(structural_task, explore=True)
+            if structural_task is not None
+            else None
+        )
+        attempts = list(processor_result.alternatives) if processor_result else []
+        verified: list[tuple[Any, Any]] = []
+        rewards: list[dict[str, Any]] = []
+        for trace in attempts:
+            verification = verify_trace(structural_task, trace)
+            verified.append((trace, verification))
+            self.processor.learn(trace, verification.reward, "deterministic_result_validator")
+            rewards.append(
+                {
+                    "pathway": trace.pathway,
+                    "reward": verification.reward,
+                    "accepted": verification.accepted,
+                    "result_code": verification.result_code,
+                }
+            )
+
+        selected_pair = next((pair for pair in verified if pair[1].accepted), None)
+        selected = selected_pair[0] if selected_pair else None
+        selected_verification = selected_pair[1] if selected_pair else None
+        accepted = selected is not None and selected_verification is not None
+        cycles: list[dict[str, Any]] = []
+        for index, (trace, verification) in enumerate(verified, start=1):
+            cycle = {
+                "cycle": index,
+                "pathway": trace.pathway,
+                "operators": trace.operators,
+                "candidate_answer": trace.answer,
+                "satisfied": verification.accepted,
+                "validation_checks": verification.checks,
+                "result_code": verification.result_code,
+            }
+            cycles.append(cycle)
+            self.db.add_task_event(
+                task_id,
+                "ORGANIC_PROCESSOR_CYCLE",
+                f"Cycle {index}: {trace.pathway} satisfied={verification.accepted}",
+                cycle,
+            )
+
+        self.core_calls += 1
+        answer_value = selected.answer if selected else None
+        if accepted and structural_task and structural_task.family == "order_cardinality":
+            label_match = re.search(
+                r"\bhow many\s+([a-z][a-z-]*)",
+                request.envelope.original_request,
+                flags=re.IGNORECASE,
+            )
+            label = label_match.group(1).lower() if label_match else "objects"
+            answer = (
+                f"{answer_value} {label}. The same objects can satisfy more than one relative-position "
+                "description, so the stated groups overlap in the smallest consistent arrangement."
+            )
+        elif accepted:
+            answer = str(answer_value)
+        else:
+            answer = ""
+        if not accepted:
+            answer = (
+                "The Organic Processor could not solve this closed-world structure with its "
+                "currently implemented operators and cycle budget. No memory or web lookup was used."
+            )
+        selected_operators = list(selected.operators) if selected else []
+        selected_model = None
+        if selected:
+            for intermediate in selected.intermediate:
+                state = intermediate.get("state") if isinstance(intermediate, dict) else None
+                if isinstance(state, dict) and isinstance(state.get("model"), list):
+                    selected_model = state["model"]
+        validation_checks = (
+            dict(selected_verification.checks) if selected_verification else {"supported_family": False}
+        )
+        decision = {
+            "action": "ANSWER" if accepted else "ABSTAIN",
+            "confidence": 0.99 if accepted else 0.0,
+            "mode": "closed_world_structural_processor",
+            "validation_checks": validation_checks,
+            "result_code": (
+                selected_verification.result_code
+                if selected_verification
+                else "processor_capability_gap"
+            ),
+        }
+        reasoning_trace = {
+            "operator": "BOUNDED_STRUCTURAL_PATH" if accepted else "ORGANIC_PROCESSOR_CAPABILITY_GAP",
+            "pathway": selected.pathway if selected else None,
+            "operators": selected_operators,
+            "signature": structural_task.signature() if structural_task else None,
+            "model": {
+                "positions": selected_model,
+                "minimal_model": bool(
+                    accepted and structural_task and structural_task.family == "order_cardinality"
+                ),
+            },
+            "attempts": cycles,
+        }
+        review = {
+            "complete": accepted,
+            "reasoning_mode": "self_contained",
+            "processor_satisfied": accepted,
+            "processor_cycles": len(cycles),
+            "processor_operators": selected_operators,
+            "processor_capabilities": plan.processor_capabilities,
+            "external_grounding_required": False,
+            "external_grounding_used": False,
+            "validation_checks": validation_checks,
+            "hard_blocked": not accepted,
+        }
+        self.db.add_task_event(
+            task_id,
+            "CORE_SELF_CONTAINED_RESULT",
+            str(decision.get("action") or "ABSTAIN"),
+            {
+                **decision,
+                "resource_plan_id": plan.plan_id,
+                "reasoning_trace": reasoning_trace,
+            },
+        )
+        self._record_completeness_review(task_id, review)
+        state_after = self.processor.snapshot()
+        state_after_hash = hashlib.sha256(
+            json.dumps(state_after, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        self.db.record_processing_episode(
+            episode_id=str(uuid4()),
+            task_id=task_id,
+            request_id=request.envelope.request_id,
+            task_signature=structural_task.signature() if structural_task else "capability_gap",
+            active_weave=active_weave.model_dump(mode="json") if active_weave else {},
+            attempts=[trace.to_dict() for trace in attempts],
+            selected_pathway=selected.pathway if selected else None,
+            selected_answer=answer_value,
+            accepted=accepted,
+            result_code=str(decision["result_code"]),
+            rewards=rewards,
+            feedback_source="deterministic_result_validator",
+            state_before_hash=state_before_hash,
+            state_after_hash=state_after_hash,
+            duration_ms=(perf_counter() - started) * 1000.0,
+            metadata={
+                "resource_plan_id": plan.plan_id,
+                "external_resources_used": False,
+                "legacy_seed": self.legacy_processor.status(),
+            },
+        )
+        self.db.record_core_learning_event(
+            decision_kind="self_contained_processor",
+            selected_action=str(decision.get("action") or "ABSTAIN"),
+            reward=1.0 if accepted else -0.35,
+            outcome="constraint_model_verified" if accepted else "processor_capability_gap",
+            features={
+                "cycles": len(cycles),
+                "operator_count": len(selected_operators),
+                "world_mode_closed": 1.0 if plan.world_mode.value == "closed" else 0.0,
+            },
+            scores={"confidence": 0.99 if accepted else 0.0},
+            metadata={
+                "task_id": task_id,
+                "resource_plan_id": plan.plan_id,
+                "validation_checks": review["validation_checks"],
+            },
+        )
+        self.engine.complete_interaction_task(
+            task_id,
+            answer,
+            accepted,
+            {
+                "semantic_completeness": review,
+                "reasoning_mode": "self_contained",
+                "external_growth_attached": False,
+                "resource_plan_id": plan.plan_id,
+            },
+        )
+        return CoreResult(
+            answer=answer,
+            active_paths=[
+                "COGNITION_CONSTRAINT_WEAVE",
+                *[f"ORGANIC_PROCESSOR:{operator}" for operator in selected_operators],
+                "RESULT_VALIDATOR:verify_constraints",
+            ],
+            metadata={
+                "mvp_task_id": task_id,
+                "resource_plan_id": plan.plan_id,
+                "planner_world_mode": plan.world_mode.value,
+                "processor_capabilities": plan.processor_capabilities,
+                "processor_operators": selected_operators,
+                "processor_cycles": len(cycles),
+                "confidence": 0.99 if accepted else 0.0,
+                "missing": [] if accepted else ["No verified processor pathway for the structural task."],
+                "sources": [],
+                "decision": decision,
+                "reasoning_trace": reasoning_trace,
+                "reasoning_mode": "self_contained",
+                "reasoning_cycles": len(cycles),
+                "internal_growth_invoked": False,
+                "grounded_answer_used": False,
+                "self_contained_reasoning_used": True,
+                "semantic_completeness_complete": accepted,
+                "semantic_completeness_review": review,
+                "hard_blocked": not accepted,
+                "core_calls_total": self.core_calls,
+            },
+        )
+
     def process_core(self, request: CoreRequest) -> CoreResult:
         task_id = self._create_runtime_task(request)
         internal_growth = False
         growth_result = request.growth
+        if (
+            request.envelope.self_contained_reasoning
+            and request.resource_plan is not None
+            and request.resource_plan.world_mode.value == "closed"
+        ):
+            return self._process_self_contained(request, task_id)
+        if request.envelope.intent == "clarification_needed":
+            subject = clarification_subject(request.envelope.normalized_request)
+            if not subject and request.envelope.entities:
+                subject = request.envelope.entities[0].text
+            subject = subject or "that"
+            answer = (
+                f"What would you like me to do about {subject}? "
+                "For example, I can research current options, explain it, or compare choices."
+            )
+            review = {
+                "complete": False,
+                "clarification_required": True,
+                "grounded_answer_used": False,
+                "hard_blocked": False,
+            }
+            self.db.add_task_event(
+                task_id,
+                "CLARIFICATION_REQUIRED",
+                answer,
+                {"subject": subject, "intent": request.envelope.intent},
+            )
+            self.engine.complete_interaction_task(
+                task_id,
+                answer,
+                False,
+                {"semantic_completeness": review},
+            )
+            return CoreResult(
+                answer=answer,
+                active_paths=["CLARIFICATION_REQUIRED"],
+                metadata={
+                    "core_invoked": False,
+                    "mvp_task_id": task_id,
+                    "confidence": 1.0,
+                    "missing": ["actionable objective"],
+                    "sources": [],
+                    "decision": {"action": "CLARIFY"},
+                    "reasoning_trace": {"operator": "CLARIFICATION_REQUIRED"},
+                    "internal_growth_invoked": False,
+                    "grounded_answer_used": False,
+                    "semantic_completeness_complete": False,
+                    "semantic_completeness_review": review,
+                    "clarification_required": True,
+                    "hard_blocked": False,
+                    "core_calls_total": self.core_calls,
+                },
+            )
         if "coding" in request.envelope.required_capabilities:
             answer = (
                 "This Organic runtime GUI is not connected to coding or file-editing tools. "
@@ -497,7 +1120,7 @@ class MvpOrganicSystem:
                 growth_result.model_dump(mode="json"),
             )
 
-        result = self._answer_with_core(request.envelope.normalized_request, task_id)
+        result = self._answer_with_core(request.envelope, task_id, growth_result)
         answer = self._answer_text(result)
         review = self._semantic_completeness_review(request, result, answer, growth_result)
         self._record_completeness_review(task_id, review)
@@ -510,7 +1133,7 @@ class MvpOrganicSystem:
                 growth_result.summary,
                 growth_result.model_dump(mode="json"),
             )
-            result = self._answer_with_core(request.envelope.normalized_request, task_id)
+            result = self._answer_with_core(request.envelope, task_id, growth_result)
             answer = self._answer_text(result)
             review = self._semantic_completeness_review(request, result, answer, growth_result)
             self._record_completeness_review(task_id, review)
@@ -548,7 +1171,13 @@ class MvpOrganicSystem:
         return CoreResult(
             answer=answer,
             activated_memory_ids=list(request.preflight.memory_ids),
-            active_paths=[str((result.get("reasoning_trace") or {}).get("operator") or "organic_core")],
+            active_paths=[
+                *[
+                    f"ORGANIC_PROCESSOR:{name}"
+                    for name in result.get("processor_operators") or []
+                ],
+                str((result.get("reasoning_trace") or {}).get("operator") or "organic_executive"),
+            ],
             metadata={
                 "mvp_task_id": task_id,
                 "confidence": confidence,
@@ -556,6 +1185,10 @@ class MvpOrganicSystem:
                 "sources": result.get("sources") or [],
                 "decision": decision,
                 "reasoning_trace": result.get("reasoning_trace") or {},
+                "grounded_version_tokens": result.get("grounded_version_tokens") or [],
+                "processor_capabilities": result.get("processor_capabilities") or [],
+                "processor_operators": result.get("processor_operators") or [],
+                "processor_cycles": len(result.get("processor_cycles") or []),
                 "internal_growth_invoked": internal_growth,
                 "grounded_answer_used": review["grounded_answer_used"],
                 "semantic_completeness_complete": review["complete"],

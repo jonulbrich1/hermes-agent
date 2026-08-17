@@ -9,6 +9,8 @@ import os
 import re
 import sys
 import threading
+import urllib.error
+import urllib.request
 
 from .runtime.store import OrganicStore
 from .runtime.core_adapter import OrganicCoreAdapter
@@ -20,6 +22,26 @@ _CTX = None
 _MVP_SYSTEM = None
 _MVP_ERROR = None
 _LOCK = threading.RLock()
+
+
+def _strict_organic_mode() -> bool:
+    return os.environ.get("ORGANIC_HERMES_MODE", "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def _runtime_api(method: str, path: str, payload: dict | None = None, timeout: float = 180.0):
+    base = os.environ.get("ORGANIC_RUNTIME_URL", "http://127.0.0.1:8788").rstrip("/")
+    url = base + (path if path.startswith("/") else "/" + path)
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method=method.upper(),
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def _project_root() -> Path:
@@ -115,6 +137,16 @@ def _json(payload):
 
 
 def organic_get_state(args, **kwargs):
+    try:
+        state = _runtime_api("GET", "/api/state", timeout=5.0)
+        return _json(state)
+    except Exception as exc:
+        if _strict_organic_mode():
+            return _json({
+                "status": "ORGANIC_RUNTIME_UNAVAILABLE",
+                "error": f"{type(exc).__name__}: {exc}",
+                "fallback_used": False,
+            })
     system = _mvp_system()
     if system is not None:
         engine_state = system.engine.state()
@@ -165,6 +197,27 @@ def organic_memory_search(args, **kwargs):
 def organic_reason(args, **kwargs):
     problem = str(args.get("problem") or "").strip()
     context = args.get("context") or []
+    if not problem:
+        return _json({"status": "INVALID_REQUEST", "error": "problem is required"})
+    try:
+        response = _runtime_api("POST", "/api/message", {"text": problem})
+        return _json({
+            "status": "OK",
+            "answer": response.get("answer"),
+            "route": response.get("route"),
+            "request_id": response.get("request_id"),
+            "trace_id": response.get("trace_id"),
+            "gate": response.get("gate"),
+            "metadata": response.get("metadata") or {},
+            "context_items_supplied_by_interface": len(context) if isinstance(context, list) else 0,
+            "full_runtime_pipeline_used": True,
+            "fallback_used": False,
+        })
+    except Exception as exc:
+        if _strict_organic_mode():
+            raise RuntimeError(
+                f"Organic runtime is unavailable; no fallback was used: {type(exc).__name__}: {exc}"
+            ) from exc
     system = _mvp_system()
     if system is not None:
         from organic_runtime.contracts import CoreRequest

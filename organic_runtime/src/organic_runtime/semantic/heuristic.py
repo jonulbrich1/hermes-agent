@@ -2,7 +2,18 @@ from __future__ import annotations
 
 import re
 
-from organic_runtime.contracts import IntentEnvelope, Route, RuntimeStateSnapshot
+from organic_runtime.contracts import (
+    IntentEnvelope,
+    Route,
+    RuntimeStateSnapshot,
+    SemanticCompletenessReview,
+)
+from organic_runtime.semantic.base import (
+    clarification_subject,
+    enforce_objective_coverage,
+    looks_self_contained_reasoning,
+)
+from organic_runtime.cognition.structural import infer_structural_fields
 
 
 class HeuristicSemanticInterface:
@@ -79,6 +90,36 @@ class HeuristicSemanticInterface:
                 reasons=["Offline heuristic recognized an internal-state request."],
             )
 
+        if looks_self_contained_reasoning(text):
+            structural = infer_structural_fields(text) or {}
+            return IntentEnvelope(
+                original_request=request,
+                normalized_request=text,
+                intent="self_contained_reasoning",
+                required_capabilities=["logical_reasoning"],
+                complexity=0.55,
+                uncertainty=0.20,
+                suggested_route=Route.ORGANIC_CORE,
+                self_contained_reasoning=True,
+                closed_world=True,
+                sufficient_premises=bool(structural),
+                reasoning_family=structural.get("reasoning_family"),
+                reasoning_goal=structural.get("reasoning_goal"),
+                structural_constraints=structural.get("structural_constraints", []),
+                reasons=["All premises needed for the reasoning task are in the request."],
+            )
+
+        if clarification_subject(text):
+            return IntentEnvelope(
+                original_request=request,
+                normalized_request=text,
+                intent="clarification_needed",
+                complexity=0.10,
+                uncertainty=0.80,
+                suggested_route=Route.ORGANIC_CORE,
+                reasons=["The request names a subject but does not specify an action."],
+            )
+
         if any(phrase in lower for phrase in self._coding_phrases):
             return IntentEnvelope(
                 original_request=request,
@@ -130,6 +171,33 @@ class HeuristicSemanticInterface:
             return "Hello. What would you like to work on?"
         return "I am ready. What would you like to work on?"
 
+    async def review_completeness(
+        self,
+        request: str,
+        envelope: IntentEnvelope,
+        answer: str,
+        metadata: dict,
+    ) -> SemanticCompletenessReview:
+        del envelope
+        hard_blocked = bool(metadata.get("hard_blocked"))
+        complete = bool(answer.strip()) and not hard_blocked
+        review = SemanticCompletenessReview(
+            complete=complete,
+            needs_tool_loop=not complete and not hard_blocked,
+            missing=[] if complete else ["A complete result was not produced."],
+            reason="Offline semantic completeness check.",
+        )
+        return enforce_objective_coverage(request, answer, metadata, review)
+
+    async def present_result(
+        self,
+        request: str,
+        envelope: IntentEnvelope,
+        answer: str,
+        metadata: dict,
+    ) -> str:
+        del request, envelope, metadata
+        return answer
 
 def _domain_hints(text: str) -> list[str]:
     hints: list[str] = []

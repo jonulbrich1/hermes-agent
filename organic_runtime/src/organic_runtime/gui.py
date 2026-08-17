@@ -387,7 +387,8 @@ HTML = r"""<!doctype html>
       const counts = state.counts || {};
       const web = state.web || {};
       const settings = state.settings || {};
-      const core = engine.core || {};
+      const executive = engine.executive || engine.core || {};
+      const processor = engine.processor || {};
       const rolling = state.rolling_context || {};
       $("runtime").innerHTML = [
         kv("Status", runtime.status || "unknown"),
@@ -406,7 +407,11 @@ HTML = r"""<!doctype html>
         kv("User active", engine.external_user_active ? "yes" : "no"),
         kv("Manual budget", engine.manual_growth_budget || 0),
         kv("Idle cycles", engine.completed_idle_cycles || 0),
-        kv("Core mode", core.mode || core.kind || "available")
+        kv("Executive mode", executive.mode || executive.kind || "available"),
+        kv("Processor mode", processor.mode || "unavailable"),
+        kv("Processor experiences", processor.experience_count || 0),
+        kv("Processor composites", processor.composite_count || 0),
+        kv("Processor state bytes", processor.state_bytes || 0)
       ].join("");
       $("memory").innerHTML = [
         kv("Sources", counts.sources || 0),
@@ -676,7 +681,7 @@ class GuiApp:
                 {"name": "organic.state", "description": "Read runtime, Organic Engine, growth, memory, and web status."},
                 {"name": "organic.run_growth", "description": "Request one or more background growth cycles."},
                 {"name": "organic.set_idle_growth", "description": "Enable or disable idle growth."},
-                {"name": "organic.export_review", "description": "Create a ZIP package with logs, DB reports, sources, run results, and config."},
+                {"name": "organic.export_review", "description": "Create a ZIP package with traces, logs, DB reports, sources, run results, processor state, and redacted config."},
             ],
         }
 

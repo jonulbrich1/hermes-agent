@@ -403,6 +403,15 @@ def _warn_context_length_fallback(model: str, base_url: str) -> None:
 # tokens cannot maintain enough working memory for tool-calling workflows.
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
+ORGANIC_SEMANTIC_MINIMUM_CONTEXT_LENGTH = 32_000
+
+
+def required_minimum_context_length() -> int:
+    """Return the role-scoped floor without weakening normal Hermes sessions."""
+    organic_role = os.environ.get("ORGANIC_SEMANTIC_INTERFACE", "0").strip().lower()
+    if organic_role in {"1", "true", "yes", "on"}:
+        return ORGANIC_SEMANTIC_MINIMUM_CONTEXT_LENGTH
+    return MINIMUM_CONTEXT_LENGTH
 
 # Short-lived in-process cache for local-server context probes. Bounds the
 # probe rate when the new local-endpoint live-probe paths (reconcile-on-hit +

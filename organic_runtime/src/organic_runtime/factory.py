@@ -1,20 +1,21 @@
 from __future__ import annotations
 
+from organic_runtime.adapters.mock import EchoCoreAdapter, KeywordMemoryAdapter, MockGrowthAdapter
 from organic_runtime.adapters.mvp import (
     MvpCoreAdapter,
     MvpGrowthAdapter,
     MvpMemoryAdapter,
     MvpOrganicSystem,
 )
-from organic_runtime.adapters.mock import EchoCoreAdapter, KeywordMemoryAdapter, MockGrowthAdapter
 from organic_runtime.config import RuntimeSettings
 from organic_runtime.contracts import Route
 from organic_runtime.gate.policy import GatePolicy, GateThresholds
+from organic_runtime.planning.resource_planner import CognitiveResourcePlanner
 from organic_runtime.runtime import OrganicRuntime
 from organic_runtime.semantic.heuristic import HeuristicSemanticInterface
 from organic_runtime.state.store import InMemoryStateStore
-from organic_runtime.tracing.events import JsonlTraceRecorder
 from organic_runtime.tooling.registry import ToolDescriptor, ToolRegistry
+from organic_runtime.tracing.events import JsonlTraceRecorder
 
 
 def build_runtime(settings: RuntimeSettings | None = None) -> OrganicRuntime:
@@ -70,6 +71,9 @@ def build_runtime(settings: RuntimeSettings | None = None) -> OrganicRuntime:
     else:
         raise ValueError("ORGANIC_BACKEND must be 'mvp' or 'mock'; got " f"{settings.backend!r}.")
 
+    outcome_recorder = (
+        system.record_resource_plan_outcome if settings.backend == "mvp" else None
+    )
     return OrganicRuntime(
         semantic=semantic,
         memory=memory,
@@ -79,4 +83,8 @@ def build_runtime(settings: RuntimeSettings | None = None) -> OrganicRuntime:
         state=InMemoryStateStore(),
         traces=JsonlTraceRecorder(settings.trace_dir),
         tools=tools,
+        planner=CognitiveResourcePlanner(
+            max_processor_cycles=settings.processor_max_cycles,
+            outcome_recorder=outcome_recorder,
+        ),
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import html
 import json
 import logging
 import re
@@ -155,6 +156,58 @@ class BraveProvider:
         return out
 
 
+class DuckDuckGoProvider:
+    """Keyless general-web discovery; fetched pages still pass the normal broker checks."""
+
+    def __init__(self, http: HTTPClient, logger: logging.Logger):
+        self.http, self.logger = http, logger
+        self.endpoint = 'https://html.duckduckgo.com/html/'
+
+    @staticmethod
+    def _target_url(value: str) -> str:
+        value = html.unescape(value)
+        if value.startswith('//'):
+            value = 'https:' + value
+        parsed = urllib.parse.urlsplit(value)
+        if parsed.hostname and parsed.hostname.endswith('duckduckgo.com'):
+            query = urllib.parse.parse_qs(parsed.query)
+            target = (query.get('uddg') or [''])[0]
+            if target:
+                return urllib.parse.unquote(target)
+        return value
+
+    def search(self, query: str, limit: int = 5) -> list[SearchResult]:
+        raw, _ = self.http.get(
+            self.endpoint + '?' + urllib.parse.urlencode({'q': query}),
+            headers={'Accept': 'text/html'},
+        )
+        page = raw.decode('utf-8', 'replace')
+        pattern = re.compile(
+            r'<a[^>]+class=["\'][^"\']*result__a[^"\']*["\'][^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        results: list[SearchResult] = []
+        seen: set[str] = set()
+        for href, title_html in pattern.findall(page):
+            url = self._target_url(href)
+            ok, _reason = safe_http_url(url, allow_private=False)
+            if not ok or url in seen:
+                continue
+            seen.add(url)
+            title = norm_space(re.sub(r'<[^>]+>', ' ', html.unescape(title_html)))
+            results.append(
+                SearchResult(
+                    title=title or urllib.parse.urlsplit(url).hostname or url,
+                    url=url,
+                    provider='duckduckgo',
+                    rank=len(results) + 1,
+                )
+            )
+            if len(results) >= limit:
+                break
+        return results
+
+
 
 
 class LocalCorpusProvider:
@@ -269,6 +322,7 @@ class EvidenceBroker:
         self.http = HTTPClient(config, logger, audit)
         self.wikipedia = WikipediaProvider(config, self.http, logger)
         self.brave = BraveProvider(config, self.http, logger)
+        self.duckduckgo = DuckDuckGoProvider(self.http, logger)
         self.local_corpus = LocalCorpusProvider(config, logger)
         self.direct = DirectFetcher(config, self.http, logger)
 
@@ -278,6 +332,7 @@ class EvidenceBroker:
             'mode': mode,
             'brave_configured': self.brave.ready(),
             'wikipedia_available_without_key': True,
+            'duckduckgo_available_without_key': True,
             'local_corpus_ready': self.local_corpus.ready(),
             'direct_url_fetch': True,
             'private_web_allowed': bool(self.config.get('allow_private_web', False)),
@@ -305,7 +360,18 @@ class EvidenceBroker:
                 self.logger.warning('Brave search failed: %s', exc)
                 if mode == 'brave':
                     raise
-        if mode in {'auto', 'wikipedia', 'brave'}:
+        if mode in {'auto', 'duckduckgo'}:
+            try:
+                results = self.duckduckgo.search(query, limit=limit)
+                if results:
+                    self.audit.write('web_search_results', query=query, provider='duckduckgo', count=len(results))
+                    return results
+            except Exception as exc:
+                errors.append(f'duckduckgo: {exc}')
+                self.logger.warning('DuckDuckGo search failed: %s', exc)
+                if mode == 'duckduckgo':
+                    raise
+        if mode in {'auto', 'wikipedia', 'brave', 'duckduckgo'}:
             try:
                 results = self.wikipedia.search(query, limit=limit)
                 self.audit.write('web_search_results', query=query, provider='wikipedia', count=len(results))

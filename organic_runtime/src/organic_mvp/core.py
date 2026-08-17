@@ -1,24 +1,32 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import math
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
 from .db import MemoryDB
-from .util import content_words, contains_negation, norm_space, normalize_label, sha256_file, sha256_text, utcnow
+from .util import (
+    atomic_write_text,
+    content_words,
+    contains_negation,
+    norm_space,
+    sha256_file,
+    sha256_text,
+    utcnow,
+)
 
 
 class CoreError(RuntimeError):
     pass
 
 
-class OrganicProcessingCore:
-    """Bounded, domain-agnostic processing unit for the Organic AI MVP.
+class OrganicExecutivePolicy:
+    """Bounded policy used by the Executive for evidence and growth decisions.
 
     The core does not contain a domain fact store and it never receives direct web access.
     Cognition supplies an Active Weave of grounded evidence. The core learns small,
@@ -29,8 +37,8 @@ class OrganicProcessingCore:
     procedures, and tools. Core state size is measured from disk and hard-capped.
     """
 
-    mode = "organic_processing_core"
-    version = "0.3.0"
+    mode = "organic_executive_policy"
+    version = "0.4.0"
 
     ACTIONS = ("ANSWER", "SEARCH", "VERIFY", "ABSTAIN")
     TASK_FEATURES = (
@@ -65,6 +73,7 @@ class OrganicProcessingCore:
         self.cap_bytes = int(config.get("max_core_bytes", 5 * 1024**3))
         self.learning_enabled = bool(config.get("core_learning_enabled", True))
         self.learning_rate = float(config.get("core_learning_rate", 0.08))
+        self._state_lock = threading.RLock()
         self.state = self._load_or_initialize()
         self._enforce_cap()
 
@@ -160,12 +169,11 @@ class OrganicProcessingCore:
         return state
 
     def _write_state(self, state: dict[str, Any]) -> None:
-        state = dict(state)
-        state["updated_at"] = utcnow()
-        tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.state_path)
-        self._enforce_cap()
+        with self._state_lock:
+            state = dict(state)
+            state["updated_at"] = utcnow()
+            atomic_write_text(self.state_path, json.dumps(state, indent=2, sort_keys=True))
+            self._enforce_cap()
 
     def _core_bytes(self) -> int:
         total = 0
@@ -196,25 +204,26 @@ class OrganicProcessingCore:
             return "unavailable"
 
     def status(self) -> dict[str, Any]:
-        return {
-            "mode": self.mode,
-            "version": self.version,
-            "ready": True,
-            "learning_enabled": self.learning_enabled,
-            "learning_updates": int(self.state.get("learning_updates", 0)),
-            "task_decisions": int(self.state.get("task_decisions", 0)),
-            "growth_decisions": int(self.state.get("growth_decisions", 0)),
-            "core_bytes": self._core_bytes(),
-            "hard_cap_bytes": self.cap_bytes,
-            "hard_cap_gib": round(self.cap_bytes / (1024**3), 3),
-            "implementation_fingerprint": self.implementation_fingerprint(),
-            "state_fingerprint": self.state_fingerprint(),
-            "domain_knowledge_policy": "external_only",
-            "web_access": "none_direct; evidence supplied by Cognition",
-            "actions": list(self.ACTIONS),
-            "task_features": list(self.TASK_FEATURES),
-            "growth_features": list(self.GROWTH_FEATURES),
-        }
+        with self._state_lock:
+            return {
+                "mode": self.mode,
+                "version": self.version,
+                "ready": True,
+                "learning_enabled": self.learning_enabled,
+                "learning_updates": int(self.state.get("learning_updates", 0)),
+                "task_decisions": int(self.state.get("task_decisions", 0)),
+                "growth_decisions": int(self.state.get("growth_decisions", 0)),
+                "core_bytes": self._core_bytes(),
+                "hard_cap_bytes": self.cap_bytes,
+                "hard_cap_gib": round(self.cap_bytes / (1024**3), 3),
+                "implementation_fingerprint": self.implementation_fingerprint(),
+                "state_fingerprint": self.state_fingerprint(),
+                "domain_knowledge_policy": "external_only",
+                "web_access": "none_direct; evidence supplied by Cognition",
+                "actions": list(self.ACTIONS),
+                "task_features": list(self.TASK_FEATURES),
+                "growth_features": list(self.GROWTH_FEATURES),
+            }
 
     @staticmethod
     def _clip(v: float, low: float = -5.0, high: float = 5.0) -> float:
@@ -269,18 +278,19 @@ class OrganicProcessingCore:
 
     def decide(self, goal: str, evidence: list[dict], mode: str = "task") -> dict[str, Any]:
         features = self._task_features(goal, evidence)
-        scores = self._score_actions(features, mode=mode)
-        # Safety floor: no evidence cannot produce an answer or verification result.
-        if not evidence:
-            scores["ANSWER"] -= 2.0
-            scores["VERIFY"] -= 1.5
-            scores["SEARCH"] += 1.5
-        action = max(scores, key=scores.get)
-        ordered = sorted(scores.values(), reverse=True)
-        margin = ordered[0] - ordered[1] if len(ordered) > 1 else ordered[0]
-        confidence = self._sigmoid(margin)
-        self.state["task_decisions"] = int(self.state.get("task_decisions", 0)) + 1
-        self._write_state(self.state)
+        with self._state_lock:
+            scores = self._score_actions(features, mode=mode)
+            # Safety floor: no evidence cannot produce an answer or verification result.
+            if not evidence:
+                scores["ANSWER"] -= 2.0
+                scores["VERIFY"] -= 1.5
+                scores["SEARCH"] += 1.5
+            action = max(scores, key=scores.get)
+            ordered = sorted(scores.values(), reverse=True)
+            margin = ordered[0] - ordered[1] if len(ordered) > 1 else ordered[0]
+            confidence = self._sigmoid(margin)
+            self.state["task_decisions"] = int(self.state.get("task_decisions", 0)) + 1
+            self._write_state(self.state)
         return {
             "action": action,
             "confidence": round(confidence, 4),
@@ -296,24 +306,25 @@ class OrganicProcessingCore:
         reward = self._clip(float(reward), -1.0, 1.0)
         features = decision.get("features") or {}
         if self.learning_enabled:
-            weights = self.state["task_weights"][action]
-            for k in self.TASK_FEATURES:
-                old = float(weights.get(k, 0.0))
-                delta = self.learning_rate * reward * float(features.get(k, 0.0))
-                weights[k] = round(self._clip(old + delta), 6)
-            # Small competitive pressure keeps a failed action from dominating forever.
-            if reward < 0:
-                for other in self.ACTIONS:
-                    if other == action:
-                        continue
-                    ow = self.state["task_weights"][other]
-                    for k in self.TASK_FEATURES:
-                        old = float(ow.get(k, 0.0))
-                        delta = self.learning_rate * (-reward) * 0.03 * float(features.get(k, 0.0))
-                        ow[k] = round(self._clip(old + delta), 6)
-            self.state["learning_updates"] = int(self.state.get("learning_updates", 0)) + 1
-            self.state["reward_totals"][action] = round(float(self.state["reward_totals"].get(action, 0.0)) + reward, 6)
-            self._write_state(self.state)
+            with self._state_lock:
+                weights = self.state["task_weights"][action]
+                for k in self.TASK_FEATURES:
+                    old = float(weights.get(k, 0.0))
+                    delta = self.learning_rate * reward * float(features.get(k, 0.0))
+                    weights[k] = round(self._clip(old + delta), 6)
+                # Small competitive pressure keeps a failed action from dominating forever.
+                if reward < 0:
+                    for other in self.ACTIONS:
+                        if other == action:
+                            continue
+                        ow = self.state["task_weights"][other]
+                        for k in self.TASK_FEATURES:
+                            old = float(ow.get(k, 0.0))
+                            delta = self.learning_rate * (-reward) * 0.03 * float(features.get(k, 0.0))
+                            ow[k] = round(self._clip(old + delta), 6)
+                self.state["learning_updates"] = int(self.state.get("learning_updates", 0)) + 1
+                self.state["reward_totals"][action] = round(float(self.state["reward_totals"].get(action, 0.0)) + reward, 6)
+                self._write_state(self.state)
         self.db.record_core_learning_event(
             decision_kind="task_policy",
             selected_action=action,
@@ -339,16 +350,17 @@ class OrganicProcessingCore:
     def select_growth_target(self, candidates: list[dict]) -> tuple[dict | None, dict | None]:
         if not candidates:
             return None, None
-        scored = []
-        weights = self.state["growth_weights"]
-        for c in candidates:
-            feats = self._growth_features(c)
-            score = sum(float(weights.get(k, 0.0)) * feats[k] for k in self.GROWTH_FEATURES)
-            scored.append((score, c, feats))
-        scored.sort(key=lambda x: (x[0], int(x[1].get("mention_count") or 0)), reverse=True)
-        score, candidate, feats = scored[0]
-        self.state["growth_decisions"] = int(self.state.get("growth_decisions", 0)) + 1
-        self._write_state(self.state)
+        with self._state_lock:
+            scored = []
+            weights = self.state["growth_weights"]
+            for c in candidates:
+                feats = self._growth_features(c)
+                score = sum(float(weights.get(k, 0.0)) * feats[k] for k in self.GROWTH_FEATURES)
+                scored.append((score, c, feats))
+            scored.sort(key=lambda x: (x[0], int(x[1].get("mention_count") or 0)), reverse=True)
+            score, candidate, feats = scored[0]
+            self.state["growth_decisions"] = int(self.state.get("growth_decisions", 0)) + 1
+            self._write_state(self.state)
         trace = {
             "score": round(score, 4),
             "features": {k: round(v, 4) for k, v in feats.items()},
@@ -369,13 +381,14 @@ class OrganicProcessingCore:
         reward = self._clip(float(reward), -1.0, 1.0)
         feats = selection_trace.get("features") or {}
         if self.learning_enabled:
-            weights = self.state["growth_weights"]
-            for k in self.GROWTH_FEATURES:
-                old = float(weights.get(k, 0.0))
-                weights[k] = round(self._clip(old + self.learning_rate * 0.5 * reward * float(feats.get(k, 0.0))), 6)
-            self.state["learning_updates"] = int(self.state.get("learning_updates", 0)) + 1
-            self.state["growth_reward_total"] = round(float(self.state.get("growth_reward_total", 0.0)) + reward, 6)
-            self._write_state(self.state)
+            with self._state_lock:
+                weights = self.state["growth_weights"]
+                for k in self.GROWTH_FEATURES:
+                    old = float(weights.get(k, 0.0))
+                    weights[k] = round(self._clip(old + self.learning_rate * 0.5 * reward * float(feats.get(k, 0.0))), 6)
+                self.state["learning_updates"] = int(self.state.get("learning_updates", 0)) + 1
+                self.state["growth_reward_total"] = round(float(self.state.get("growth_reward_total", 0.0)) + reward, 6)
+                self._write_state(self.state)
         self.db.record_core_learning_event(
             decision_kind="growth_policy",
             selected_action="SELECT_FRONTIER",
@@ -388,7 +401,13 @@ class OrganicProcessingCore:
 
     def generate_query(self, goal: str, context: list[str]) -> str:
         """Create a search query using structure, novelty, and lexical salience only."""
-        terms = list(dict.fromkeys(content_words(goal)))
+        instruction_terms = {
+            "check", "details", "find", "grounded", "identify", "information",
+            "look", "lookup", "missing", "omits", "prefer", "provide", "report",
+            "research", "result", "specific", "summarize", "summary", "verify",
+        }
+        raw_terms = list(dict.fromkeys(content_words(goal)))
+        terms = [term for term in raw_terms if term not in instruction_terms] or raw_terms
         ctx = " ".join(context).lower()
         # Prefer terms that are central to the goal but not already well represented in context.
         ranked = []
@@ -398,7 +417,7 @@ class OrganicProcessingCore:
             early_bonus = max(0.0, 0.35 - i * 0.025)
             ranked.append((novelty + length_bonus + early_bonus, term))
         ranked.sort(key=lambda x: x[0], reverse=True)
-        chosen = [t for _s, t in ranked[:7]]
+        chosen = [t for _s, t in ranked[:10]]
         if not chosen:
             return norm_space(goal)[:180]
         # Preserve goal order for readability/search-engine behavior.
@@ -579,11 +598,19 @@ class OrganicProcessingCore:
         return {
             "answer": " ".join(sentences[:4]),
             "confidence": round(confidence, 3),
-            "missing": ["No explicit relation path was derived; answer is grounded evidence selection."] if confidence < 0.72 else [],
+            "missing": ["Grounded evidence coverage remains weak."] if confidence < 0.50 else [],
             "sources": sources[:6],
             "decision": decision,
             "reasoning_trace": {"operator": "GROUNDED_CLAIM_SELECTION", "claim_ids": [x[2].get("claim_id") for x in useful[:4]]},
         }
+
+    def solve_self_contained(self, question: str, plan: dict[str, Any]) -> dict[str, Any]:
+        """Execute an authorized closed-world plan without factual memory or web access."""
+        del question, plan
+        raise CoreError(
+            "Raw-language self-contained solving was removed. Route typed structural tasks "
+            "through Cognition and organic_processor."
+        )
 
     def judge_claim(self, claim: str, evidence: list[dict]) -> dict[str, Any]:
         decision = self.decide(claim, evidence, mode="claim_validation")
@@ -683,8 +710,9 @@ class OrganicProcessingCore:
 
 
 # Backward-compatible type alias used by the cognition/memory modules.
-BaseCore = OrganicProcessingCore
+OrganicProcessingCore = OrganicExecutivePolicy
+BaseCore = OrganicExecutivePolicy
 
 
-def build_core(config: AppConfig, db: MemoryDB, logger: logging.Logger) -> OrganicProcessingCore:
-    return OrganicProcessingCore(config, db, logger)
+def build_core(config: AppConfig, db: MemoryDB, logger: logging.Logger) -> OrganicExecutivePolicy:
+    return OrganicExecutivePolicy(config, db, logger)

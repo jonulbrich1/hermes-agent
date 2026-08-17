@@ -33,6 +33,22 @@ class GatePolicy:
             reasons.append("Growth is unavailable; escalating to Organic Core for bounded handling.")
             return self._decision(envelope, Route.ORGANIC_CORE, reasons, escalated=True)
 
+        if envelope.self_contained_reasoning:
+            if not context.state.core_available:
+                reasons.append("Self-contained reasoning requires the Organic Core, which is unavailable.")
+                return GateDecision(
+                    request_id=envelope.request_id,
+                    route=Route.ORGANIC_CORE,
+                    authorized=False,
+                    escalated=True,
+                    reasons=reasons,
+                )
+            reasons.append(
+                "All premises are supplied by the request; authorize bounded Organic reasoning "
+                "without Living Memory or web growth."
+            )
+            return self._decision(envelope, Route.ORGANIC_CORE, reasons)
+
         if envelope.uncertainty > t.escalate_uncertainty:
             reasons.append(
                 f"Semantic uncertainty {envelope.uncertainty:.2f} exceeds "

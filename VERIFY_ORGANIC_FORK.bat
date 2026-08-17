@@ -12,6 +12,9 @@ if %ERRORLEVEL% NEQ 0 (
 python tests\test_organic_ai_plugin.py
 if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
 
+python tests\test_organic_dashboard_plugin.py
+if %ERRORLEVEL% NEQ 0 exit /b %ERRORLEVEL%
+
 if exist organic_runtime\.venv\Scripts\python.exe (
     organic_runtime\.venv\Scripts\python.exe -m pytest -q organic_runtime\tests
     exit /b %ERRORLEVEL%

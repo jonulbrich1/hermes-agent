@@ -81,7 +81,7 @@ out = on_llm_request(request=request, turn_id="fork-test")["request"]
 names = {t["function"]["name"] for t in out.get("tools", [])}
 T("Factual route filters direct terminal/web tools", "terminal" not in names and "web_search" not in names)
 T("Factual first pass requires an Organic tool", out.get("tool_choice") == "required")
-T("Organic reasoning tools remain available", {"organic_reason", "organic_memory_search"} <= names)
+T("Main factual pass exposes only the Organic Cognition entry tool", names == {"organic_reason"})
 
 with tempfile.TemporaryDirectory() as td:
     store = OrganicStore(Path(td) / "mem.sqlite")

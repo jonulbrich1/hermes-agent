@@ -111,6 +111,11 @@ def on_llm_request(**kwargs):
         filtered = [t for t in original_tools if _tool_name(t) in allowed]
         request["tools"] = filtered
 
+        if decision.route != Route.CONVERSATION and not filtered:
+            raise RuntimeError(
+                "Organic mode failed closed because its authorized entry tool is unavailable."
+            )
+
         first_organic_call_required = (
             decision.route != Route.CONVERSATION
             and not state.get("organic_tool_used")

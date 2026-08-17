@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from organic_runtime.adapters.base import CoreAdapter, GrowthAdapter, MemoryAdapter
 from organic_runtime.contracts import (
+    CognitiveResourcePlan,
     CoreRequest,
     GateDecision,
     IntentEnvelope,
@@ -34,6 +35,7 @@ class OrganicRouter:
         envelope: IntentEnvelope,
         preflight: PreflightKnowledge,
         state: RuntimeStateSnapshot,
+        resource_plan: CognitiveResourcePlan,
     ) -> tuple[str, dict[str, object]]:
         if not decision.authorized:
             raise RuntimeError("Interaction Gate did not authorize execution.")
@@ -66,7 +68,13 @@ class OrganicRouter:
 
         if decision.route == Route.ORGANIC_CORE:
             print("[router] Executing Organic Core path")
-            result = await self.core.process(CoreRequest(envelope=envelope, preflight=preflight))
+            result = await self.core.process(
+                CoreRequest(
+                    envelope=envelope,
+                    preflight=preflight,
+                    resource_plan=resource_plan,
+                )
+            )
             return result.answer, {
                 "core_invoked": True,
                 "growth_invoked": False,
@@ -79,7 +87,12 @@ class OrganicRouter:
             print("[router] Executing growth path before Organic Core synthesis")
             growth_result = await self.growth.grow(envelope)
             core_result = await self.core.process(
-                CoreRequest(envelope=envelope, preflight=preflight, growth=growth_result)
+                CoreRequest(
+                    envelope=envelope,
+                    preflight=preflight,
+                    growth=growth_result,
+                    resource_plan=resource_plan,
+                )
             )
             return core_result.answer, {
                 "core_invoked": True,

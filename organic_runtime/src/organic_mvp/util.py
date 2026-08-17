@@ -8,7 +8,9 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -22,7 +24,8 @@ STOPWORDS = {
     'only','or','other','our','ours','ourselves','out','over','own','same','she','should','so','some','such','than','that','the',
     'their','theirs','them','themselves','then','there','these','they','this','those','through','to','too','under','until','up',
     'very','was','we','were','what','when','where','which','while','who','whom','why','will','with','would','you','your','yours',
-    'yourself','yourselves','explain','describe','tell','please','learn','understand','information','thing','things'
+    'yourself','yourselves','explain','describe','tell','please','learn','understand','information','thing','things',
+    'want','wants','wanted','need','needs','needed','looking'
 }
 
 GENERIC_RELATION_VERBS = {
@@ -54,6 +57,27 @@ def sha256_file(path: Path) -> str:
 
 def compact_json(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+
+def atomic_write_text(path: Path, text: str, retries: int = 6) -> None:
+    """Atomically replace a text file, tolerating brief Windows sync locks."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        for attempt in range(max(1, retries)):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt + 1 >= retries:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def norm_space(text: str) -> str:

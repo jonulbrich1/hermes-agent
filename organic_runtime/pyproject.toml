@@ -4,12 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "organic-ai-runtime"
-version = "0.3.0"
+version = "0.4.0"
 description = "Organic AI runtime overlay integrated into the Hermes fork scaffold"
 requires-python = ">=3.10"
 dependencies = [
     "pydantic>=2.12",
     "pydantic-ai-slim[openai]>=2.31,<3",
+    "mcp==1.28.1",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +24,7 @@ dev = [
 organic-ai = "organic_runtime.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/organic_runtime", "src/organic_mvp"]
+packages = ["src/organic_runtime", "src/organic_mvp", "src/organic_processor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

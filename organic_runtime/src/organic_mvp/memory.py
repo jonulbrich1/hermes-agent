@@ -6,13 +6,20 @@ import logging
 import math
 import re
 from dataclasses import dataclass
-from typing import Iterable, Optional
 
 from .core import BaseCore
 from .db import MemoryDB
 from .evidence import EvidenceDocument
 from .loggingx import AuditLog
-from .util import GENERIC_RELATION_VERBS, STOPWORDS, content_words, norm_space, normalize_label, sentence_split, stable_uid, utcnow, words
+from .util import (
+    GENERIC_RELATION_VERBS,
+    STOPWORDS,
+    content_words,
+    norm_space,
+    normalize_label,
+    sentence_split,
+    stable_uid,
+)
 
 
 ALLOWED_GROWTH_KINDS = {
@@ -322,6 +329,91 @@ class MemoryCompiler:
             d['relations'] = [dict(x) for x in rel_rows]
             ranked.append(d)
         ranked.sort(key=lambda x: (x['retrieval_score'], x.get('confidence', 0)), reverse=True)
+        return ranked[:limit]
+
+    def retrieve_from_sources(
+        self,
+        query: str,
+        source_ids: set[str],
+        limit: int = 18,
+    ) -> list[dict]:
+        """Rank validated claims from a just-completed, source-bounded growth pass."""
+        bounded_ids = sorted({str(source_id) for source_id in source_ids if source_id})[:32]
+        if not bounded_ids:
+            return []
+
+        placeholders = ','.join('?' for _ in bounded_ids)
+        rows = self.db.query(
+            f'''SELECT c.*, s.title AS source_title, s.url AS source_url,
+                       s.provider AS source_provider
+                FROM claims c LEFT JOIN sources s ON s.source_id=c.source_id
+                WHERE c.status IN ('GROUNDED','USER_VALIDATED')
+                  AND c.source_id IN ({placeholders})
+                ORDER BY c.created_at DESC''',
+            bounded_ids,
+        )
+        action_terms = {
+            'check', 'find', 'identify', 'look', 'lookup', 'report', 'research',
+            'summary', 'summarize', 'verify',
+        }
+        terms = list(dict.fromkeys(content_words(query)))
+        focused_terms = [term for term in terms if term not in action_terms] or terms
+        qset = set(focused_terms[:12])
+        asks_for_version = bool({'release', 'version'} & qset)
+        asks_for_current = bool({'current', 'latest', 'newest', 'recent', 'stable'} & qset)
+
+        ranked: list[dict] = []
+        for row in rows:
+            text = str(row['text'] or '')
+            title = str(row['source_title'] or '')
+            text_terms = set(content_words(text))
+            title_terms = set(content_words(title))
+            overlap = len(qset & text_terms)
+            term_recall = overlap / max(1, len(qset))
+            specificity = overlap / max(1, math.sqrt(len(text_terms)))
+            title_recall = len(qset & title_terms) / max(1, len(qset))
+            score = (
+                term_recall * 0.55
+                + min(0.18, specificity * 0.10)
+                + title_recall * 0.10
+                + float(row['confidence']) * 0.07
+            )
+            has_version = bool(re.search(r'\b\d+(?:\.\d+){1,3}\b', text))
+            has_current_marker = bool(
+                re.search(
+                    r'\b(?:release date|released|maintenance release|stable release|latest release)\b',
+                    text,
+                    flags=re.IGNORECASE,
+                )
+                or re.search(r'\b20\d{2}\b', text)
+            )
+            if asks_for_version and has_version:
+                score += 0.15
+            if asks_for_current and has_current_marker:
+                score += 0.08
+            if re.search(r'\b(?:fallback|skip to content|privacy notice)\b', text, re.IGNORECASE):
+                score -= 0.12
+            if len(text) > 2400:
+                score -= 0.12
+
+            item = dict(row)
+            item['retrieval_score'] = round(max(0.0, min(1.0, score)), 4)
+            relation_rows = self.db.query(
+                '''SELECT r.predicate, r.confidence relation_confidence,
+                          cs.label subject_label, co.label object_label,
+                          r.object_text, r.relation_id
+                   FROM relations r JOIN concepts cs ON cs.concept_id=r.subject_id
+                   LEFT JOIN concepts co ON co.concept_id=r.object_id
+                   WHERE r.claim_id=? ORDER BY r.confidence DESC''',
+                (row['claim_id'],),
+            )
+            item['relations'] = [dict(relation) for relation in relation_rows]
+            ranked.append(item)
+
+        ranked.sort(
+            key=lambda item: (item['retrieval_score'], item.get('confidence', 0)),
+            reverse=True,
+        )
         return ranked[:limit]
 
     def frontier(self, limit: int = 25) -> list[dict]:

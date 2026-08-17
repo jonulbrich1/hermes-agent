@@ -52,6 +52,7 @@ class RuntimeSettings:
     idle_delay_seconds: int = 2
     bootstrap_growth_enabled: bool = True
     bootstrap_growth_query: str = "organic ai cognition memory evidence growth"
+    processor_max_cycles: int = 16
     fast_complexity_max: float = 0.25
     fast_uncertainty_max: float = 0.35
     known_confidence_min: float = 0.80
@@ -92,6 +93,10 @@ class RuntimeSettings:
                 "ORGANIC_BOOTSTRAP_GROWTH_QUERY",
                 "organic ai cognition memory evidence growth",
             ).strip(),
+            processor_max_cycles=max(
+                4,
+                min(_int_env("ORGANIC_PROCESSOR_MAX_CYCLES", 16), 128),
+            ),
             fast_complexity_max=_float_env("ORGANIC_GATE_FAST_COMPLEXITY_MAX", 0.25),
             fast_uncertainty_max=_float_env("ORGANIC_GATE_FAST_UNCERTAINTY_MAX", 0.35),
             known_confidence_min=_float_env("ORGANIC_GATE_KNOWN_CONFIDENCE_MIN", 0.80),

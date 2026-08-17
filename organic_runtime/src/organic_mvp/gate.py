@@ -9,7 +9,7 @@ from typing import Any
 
 from .config import AppConfig
 from .memory import MemoryCompiler
-from .util import content_words, norm_space, utcnow
+from .util import atomic_write_text, content_words, norm_space, utcnow
 
 
 ROUTES = ("CONVERSATION", "STATE", "RETRIEVE", "REASON", "GROWTH")
@@ -43,9 +43,7 @@ class InteractionGate:
             return {}
 
     def _save_cache(self) -> None:
-        tmp = self.cache_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.cache, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.cache_path)
+        atomic_write_text(self.cache_path, json.dumps(self.cache, indent=2, sort_keys=True))
 
     @staticmethod
     def _looks_social(text: str) -> bool:

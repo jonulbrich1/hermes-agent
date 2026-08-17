@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .config import AppConfig
 from .core import BaseCore
@@ -21,7 +21,8 @@ class OrganicEngine:
     """Persistent task/growth scheduler for the Organic AI MVP."""
 
     def __init__(self, root: Path, config: AppConfig, db: MemoryDB, core: BaseCore,
-                 broker: EvidenceBroker, memory: MemoryCompiler, logger: logging.Logger, audit: AuditLog):
+                 broker: EvidenceBroker, memory: MemoryCompiler, logger: logging.Logger,
+                 audit: AuditLog, processor: Any | None = None):
         self.root = root
         self.config = config
         self.db = db
@@ -30,6 +31,7 @@ class OrganicEngine:
         self.memory = memory
         self.logger = logger
         self.audit = audit
+        self.processor = processor
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -194,7 +196,9 @@ class OrganicEngine:
             'manual_growth_budget': budget,
             'completed_idle_cycles': idle_count,
             'external_user_active': external_user_active,
+            'executive': self.core.status(),
             'core': self.core.status(),
+            'processor': self.processor.status() if self.processor else {'mode': 'unavailable'},
             'web': self.broker.provider_status(),
             'counts': self.db.counts(),
         }

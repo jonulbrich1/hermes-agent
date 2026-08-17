@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Route(str, Enum):
@@ -15,11 +15,77 @@ class Route(str, Enum):
     GROWTH = "growth"
 
 
+class WorldMode(str, Enum):
+    CLOSED = "closed"
+    OPEN = "open"
+    MIXED = "mixed"
+
+
+class ActiveWeaveScope(str, Enum):
+    TASK_LOCAL_PREMISE = "task_local_premise"
+    GROUNDED_MEMORY = "grounded_memory"
+    FOREIGN_CANDIDATE = "foreign_candidate"
+    UNVERIFIED_EVIDENCE = "unverified_evidence"
+    HYPOTHESIS = "hypothesis"
+    PROCESSOR_DERIVATION = "processor_derivation"
+
+
+class ActiveWeaveTrust(str, Enum):
+    USER_SUPPLIED = "user_supplied"
+    VALIDATED = "validated"
+    UNVERIFIED = "unverified"
+    DERIVED = "derived"
+
+
+class CognitiveResource(str, Enum):
+    SEMANTIC_INTERFACE = "semantic_interface"
+    LIVING_MEMORY = "living_memory"
+    COGNITION = "cognition"
+    ORGANIC_PROCESSOR = "organic_processor"
+    GRAPH_BROKER = "graph_broker"
+    EVIDENCE_WEB = "evidence_web"
+    MEMORY_COMPILER_VALIDATOR = "memory_compiler_validator"
+    RESULT_VALIDATOR = "result_validator"
+    AUTHORIZED_TOOL = "authorized_tool"
+
+
 class EntityRef(BaseModel):
     text: str
     canonical_uid: str | None = None
     entity_type: str | None = None
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_semantic_entity(cls, value: Any) -> Any:
+        """Normalize common model-produced shapes into the runtime contract."""
+        if isinstance(value, str):
+            return {"text": value}
+        if not isinstance(value, dict) or "text" in value:
+            return value
+
+        text = next(
+            (
+                value.get(key)
+                for key in ("value", "name", "label", "entity", "mention")
+                if value.get(key) not in (None, "")
+            ),
+            None,
+        )
+        if text is None:
+            return value
+
+        normalized = {
+            "text": str(text),
+            "confidence": value.get("confidence", 0.5),
+        }
+        entity_type = value.get("entity_type") or value.get("type") or value.get("category")
+        canonical_uid = value.get("canonical_uid") or value.get("uid") or value.get("id")
+        if entity_type not in (None, ""):
+            normalized["entity_type"] = str(entity_type)
+        if canonical_uid not in (None, ""):
+            normalized["canonical_uid"] = str(canonical_uid)
+        return normalized
 
 
 class IntentEnvelope(BaseModel):
@@ -35,7 +101,35 @@ class IntentEnvelope(BaseModel):
     uncertainty: float = Field(default=0.5, ge=0.0, le=1.0)
     suggested_route: Route = Route.ORGANIC_CORE
     requires_current_external_info: bool = False
+    self_contained_reasoning: bool = False
+    closed_world: bool = False
+    sufficient_premises: bool = False
+    reasoning_family: str | None = None
+    reasoning_goal: str | None = None
+    structural_constraints: list[dict[str, Any]] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
+
+
+class ActiveWeaveItem(BaseModel):
+    uid: str = Field(default_factory=lambda: str(uuid4()))
+    role: str
+    item_type: str
+    scope: ActiveWeaveScope
+    trust: ActiveWeaveTrust
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    uncertainty: float = Field(default=0.5, ge=0.0, le=1.0)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActiveWeave(BaseModel):
+    weave_id: str = Field(default_factory=lambda: str(uuid4()))
+    request_id: str
+    family: str
+    goal: str
+    items: list[ActiveWeaveItem] = Field(default_factory=list)
+    durable_memory_allowed: bool = False
+    external_resources_allowed: bool = False
 
 
 class PreflightKnowledge(BaseModel):
@@ -87,10 +181,35 @@ class GrowthResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ResourcePlanStep(BaseModel):
+    order: int = Field(ge=1)
+    resource: CognitiveResource
+    capability: str
+    required: bool = True
+    budget: int = Field(default=1, ge=1)
+    reasons: list[str] = Field(default_factory=list)
+
+
+class CognitiveResourcePlan(BaseModel):
+    plan_id: str = Field(default_factory=lambda: str(uuid4()))
+    request_id: str
+    route: Route
+    world_mode: WorldMode
+    task_signature: list[str] = Field(default_factory=list)
+    steps: list[ResourcePlanStep] = Field(default_factory=list)
+    processor_capabilities: list[str] = Field(default_factory=list)
+    prohibited_resources: list[CognitiveResource] = Field(default_factory=list)
+    max_processor_cycles: int = Field(default=1, ge=1, le=128)
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    reasons: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class CoreRequest(BaseModel):
     envelope: IntentEnvelope
     preflight: PreflightKnowledge
     growth: GrowthResult | None = None
+    resource_plan: CognitiveResourcePlan | None = None
 
 
 class CoreResult(BaseModel):
@@ -107,3 +226,10 @@ class RuntimeResponse(BaseModel):
     answer: str
     gate: GateDecision
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SemanticCompletenessReview(BaseModel):
+    complete: bool
+    needs_tool_loop: bool = False
+    missing: list[str] = Field(default_factory=list)
+    reason: str = ""

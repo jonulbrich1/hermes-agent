@@ -202,6 +202,45 @@ CREATE TABLE IF NOT EXISTS core_learning_events(
     metadata_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_core_learning_created ON core_learning_events(created_at);
+
+CREATE TABLE IF NOT EXISTS planner_outcomes(
+    outcome_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    task_signature_json TEXT NOT NULL,
+    resources_json TEXT NOT NULL,
+    world_mode TEXT NOT NULL,
+    success INTEGER NOT NULL,
+    cost_units REAL NOT NULL,
+    duration_ms REAL NOT NULL,
+    result_code TEXT NOT NULL,
+    metadata_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_planner_outcomes_created ON planner_outcomes(created_at);
+CREATE INDEX IF NOT EXISTS idx_planner_outcomes_plan ON planner_outcomes(plan_id);
+
+CREATE TABLE IF NOT EXISTS processing_episodes(
+    episode_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    task_id TEXT,
+    request_id TEXT NOT NULL,
+    task_signature TEXT NOT NULL,
+    active_weave_json TEXT NOT NULL,
+    attempts_json TEXT NOT NULL,
+    selected_pathway TEXT,
+    selected_answer_json TEXT,
+    accepted INTEGER NOT NULL,
+    result_code TEXT NOT NULL,
+    rewards_json TEXT NOT NULL,
+    feedback_source TEXT NOT NULL,
+    state_before_hash TEXT NOT NULL,
+    state_after_hash TEXT NOT NULL,
+    duration_ms REAL NOT NULL,
+    metadata_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_processing_episodes_created ON processing_episodes(created_at);
+CREATE INDEX IF NOT EXISTS idx_processing_episodes_task ON processing_episodes(task_id);
 '''
 
 
@@ -220,8 +259,8 @@ class MemoryDB:
     def _seed_meta(self):
         if self.get_meta('created_at') is None:
             self.set_meta('created_at', utcnow())
-        if self.get_meta('schema_version') is None:
-            self.set_meta('schema_version', '1')
+        if self.get_meta('schema_version') != '3':
+            self.set_meta('schema_version', '3')
 
     def close(self):
         with self._lock:
@@ -373,6 +412,92 @@ class MemoryDB:
     def list_core_learning_events(self, limit: int = 100):
         return self.query('SELECT * FROM core_learning_events ORDER BY event_id DESC LIMIT ?', (limit,))
 
+    def record_planner_outcome(
+        self,
+        plan_id: str,
+        request_id: str,
+        task_signature: list[str],
+        resources: list[dict],
+        world_mode: str,
+        success: bool,
+        cost_units: float,
+        duration_ms: float,
+        result_code: str,
+        metadata: dict | None = None,
+    ):
+        self.execute(
+            '''INSERT INTO planner_outcomes(
+                   created_at,plan_id,request_id,task_signature_json,resources_json,
+                   world_mode,success,cost_units,duration_ms,result_code,metadata_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+            (
+                utcnow(),
+                plan_id,
+                request_id,
+                compact_json(task_signature),
+                compact_json(resources),
+                world_mode,
+                1 if success else 0,
+                float(cost_units),
+                float(duration_ms),
+                result_code,
+                compact_json(metadata or {}),
+            ),
+        )
+
+    def list_planner_outcomes(self, limit: int = 100):
+        return self.query('SELECT * FROM planner_outcomes ORDER BY outcome_id DESC LIMIT ?', (limit,))
+
+    def record_processing_episode(
+        self,
+        episode_id: str,
+        task_id: str | None,
+        request_id: str,
+        task_signature: str,
+        active_weave: dict,
+        attempts: list[dict],
+        selected_pathway: str | None,
+        selected_answer: Any,
+        accepted: bool,
+        result_code: str,
+        rewards: list[dict],
+        feedback_source: str,
+        state_before_hash: str,
+        state_after_hash: str,
+        duration_ms: float,
+        metadata: dict | None = None,
+    ):
+        self.execute(
+            '''INSERT INTO processing_episodes(
+                   episode_id,created_at,task_id,request_id,task_signature,
+                   active_weave_json,attempts_json,selected_pathway,selected_answer_json,
+                   accepted,result_code,rewards_json,feedback_source,state_before_hash,
+                   state_after_hash,duration_ms,metadata_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (
+                episode_id,
+                utcnow(),
+                task_id,
+                request_id,
+                task_signature,
+                compact_json(active_weave),
+                compact_json(attempts),
+                selected_pathway,
+                compact_json(selected_answer),
+                1 if accepted else 0,
+                result_code,
+                compact_json(rewards),
+                feedback_source,
+                state_before_hash,
+                state_after_hash,
+                float(duration_ms),
+                compact_json(metadata or {}),
+            ),
+        )
+
+    def list_processing_episodes(self, limit: int = 100):
+        return self.query('SELECT * FROM processing_episodes ORDER BY created_at DESC LIMIT ?', (limit,))
+
     def recent_conversation(self, limit: int = 100):
         rows = self.query('SELECT * FROM conversation ORDER BY message_id DESC LIMIT ?', (limit,))
         return list(reversed(rows))
@@ -388,7 +513,7 @@ class MemoryDB:
 
     def counts(self) -> dict[str, int]:
         out = {}
-        for table in ('sources','claims','concepts','lexical_anchors','relations','tasks','user_claims','conversation','core_learning_events'):
+        for table in ('sources','claims','concepts','lexical_anchors','relations','tasks','user_claims','conversation','core_learning_events','planner_outcomes','processing_episodes'):
             row = self.one(f'SELECT COUNT(*) AS n FROM {table}')
             out[table] = int(row['n']) if row else 0
         out['pending_tasks'] = int((self.one("SELECT COUNT(*) n FROM tasks WHERE status='PENDING'") or {'n':0})['n'])
@@ -442,7 +567,7 @@ class MemoryDB:
         )
 
     def dump_table(self, table: str, limit: int = 10000) -> list[dict]:
-        allowed = {'sources','claims','concepts','aliases','lexical_anchors','mentions','relations','tasks','task_events','user_claims','growth_history','conversation','core_learning_events','meta'}
+        allowed = {'sources','claims','concepts','aliases','lexical_anchors','mentions','relations','tasks','task_events','user_claims','growth_history','conversation','core_learning_events','planner_outcomes','processing_episodes','meta'}
         if table not in allowed:
             raise ValueError('invalid table')
         rows = self.query(f'SELECT * FROM {table} LIMIT ?', (limit,))

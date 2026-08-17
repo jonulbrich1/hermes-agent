@@ -73,6 +73,7 @@ from agent.model_metadata import (
     is_output_cap_error,
     parse_available_output_tokens_from_error,
     save_context_length,
+    required_minimum_context_length,
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import (
@@ -425,7 +426,8 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
     if not isinstance(runtime_ctx, int) or runtime_ctx <= 0:
         return None
-    if runtime_ctx >= MINIMUM_CONTEXT_LENGTH:
+    required_context = required_minimum_context_length()
+    if runtime_ctx >= required_context:
         return None
 
     model = getattr(agent, "model", "") or "the selected model"
@@ -442,7 +444,7 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
         provider,
         base_url,
         runtime_ctx,
-        MINIMUM_CONTEXT_LENGTH,
+        required_context,
         request_tokens,
         tool_count,
         getattr(agent, "session_id", None) or "none",
@@ -450,12 +452,12 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
 
     return (
         f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime "
-        f"context, but Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
+        f"context, but this Hermes role needs at least {required_context:,} tokens "
         "for reliable tool use.\n\n"
         "Increase the Ollama context for this model and restart/reload the "
-        "model before trying again. A known-good starting point is 65,536 "
-        "tokens. In Hermes config, set `model.ollama_num_ctx: 65536` "
-        "(and `model.context_length: 65536` if you also override the displayed "
+        f"model before trying again. A known-good starting point is {required_context:,} "
+        f"tokens. In Hermes config, set `model.ollama_num_ctx: {required_context}` "
+        f"(and `model.context_length: {required_context}` if you also override the displayed "
         "model context). If you manage the model through an Ollama Modelfile, "
         "set `PARAMETER num_ctx 65536` there instead."
     )
@@ -2754,7 +2756,13 @@ def run_conversation(
                     api_kwargs = _llm_request_mw.payload
                     _original_api_kwargs = _llm_request_mw.original_payload
                     _llm_middleware_trace = _llm_request_mw.trace
-                except Exception:
+                except Exception as _organic_middleware_error:
+                    if os.environ.get("ORGANIC_HERMES_MODE", "0").strip().lower() in {
+                        "1", "true", "yes", "on"
+                    }:
+                        raise RuntimeError(
+                            "Organic request control failed closed before the provider call."
+                        ) from _organic_middleware_error
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
 

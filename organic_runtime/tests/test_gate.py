@@ -81,6 +81,28 @@ def test_fresh_external_info_forces_growth():
     assert decision.route == Route.GROWTH
 
 
+def test_self_contained_reasoning_forces_core_without_growth():
+    policy = GatePolicy()
+    envelope = IntentEnvelope(
+        original_request="Logic puzzle with all premises supplied",
+        normalized_request="Logic puzzle with all premises supplied",
+        intent="logic_puzzle",
+        required_capabilities=["logical_reasoning"],
+        self_contained_reasoning=True,
+        suggested_route=Route.GROWTH,
+    )
+    decision = policy.decide(
+        envelope,
+        GateContext(
+            state=RuntimeStateSnapshot(),
+            preflight=PreflightKnowledge(requires_research=False),
+        ),
+    )
+
+    assert decision.route == Route.ORGANIC_CORE
+    assert "without Living Memory or web growth" in decision.reasons[0]
+
+
 def test_semantic_fast_suggestion_cannot_bypass_gate_constraints():
     policy = GatePolicy()
     envelope = IntentEnvelope(

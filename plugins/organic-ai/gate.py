@@ -103,23 +103,9 @@ def allowed_tools(route: Route) -> set[str]:
     if route == Route.STATE:
         return {"organic_get_state"}
     if route == Route.RETRIEVE:
-        return {"organic_memory_search", "organic_reason"}
+        return {"organic_reason"}
     if route == Route.REASON:
-        return {
-            "organic_memory_search",
-            "organic_reason",
-            "organic_research",
-            "organic_submit_evidence",
-            "organic_validate_claim",
-        }
+        return {"organic_reason"}
     if route == Route.GROWTH:
-        return {
-            "organic_memory_search",
-            "organic_reason",
-            "organic_research",
-            "organic_submit_evidence",
-            "organic_validate_claim",
-            "organic_growth_frontier",
-            "organic_growth_cycle",
-        }
+        return {"organic_reason"}
     return set()
