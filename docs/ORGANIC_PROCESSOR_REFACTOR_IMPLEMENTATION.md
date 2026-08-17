@@ -179,7 +179,7 @@ Review ZIPs include:
   counter and Organic trace both advanced during the Chat turn.
 - Live Qwen/Ollama open-world research: passed with keyless web, Python.org,
   durable compilation, processor selection, Qwen presentation, and completeness.
-- Strict Hermes `organic_reason` live delegation: passed with no fallback.
+- Strict Hermes shared-runtime handoff: passed with no model-only fallback.
 
 ## Honest Capability Gaps
 
