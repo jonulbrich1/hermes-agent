@@ -364,16 +364,16 @@ def test_growth_fetch_without_memory_delta_is_partial(tmp_path, monkeypatch):
         _close(runtime)
 
 
-def test_single_word_growth_requires_independent_relation_sources(tmp_path):
+def test_single_word_process_growth_requires_independent_relation_sources(tmp_path):
     runtime = build_runtime(_settings(tmp_path))
     try:
         system = runtime.growth.system
         system.engine.set_idle_growth(False)
         target_id = system.db.upsert_concept(
-            "concept:photosynthesis",
-            "photosynthesis",
-            "photosynthesis",
-            kind="CONCEPT",
+            "concept:classification",
+            "classification",
+            "classification",
+            kind="PROCESS",
             status="GROUNDED",
             confidence=0.8,
         )
@@ -405,8 +405,8 @@ def test_single_word_growth_requires_independent_relation_sources(tmp_path):
                 source_id,
                 "test",
                 0,
-                "Photosynthesis uses light energy.",
-                "Photosynthesis uses light energy.",
+                "Classification uses reference features.",
+                "Classification uses reference features.",
                 0.9,
                 "GROUNDED",
             )
@@ -428,6 +428,14 @@ def test_single_word_growth_requires_independent_relation_sources(tmp_path):
                 assert target_id not in frontier_ids
             else:
                 assert target_id in frontier_ids
+
+        system.db.execute(
+            "UPDATE concepts SET kind='CONCEPT' WHERE concept_id=?",
+            (target_id,),
+        )
+        assert target_id not in {
+            item["concept_id"] for item in system.memory.frontier(limit=50)
+        }
     finally:
         _close(runtime)
 

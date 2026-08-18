@@ -533,8 +533,11 @@ class MemoryCompiler:
             if degree <= 0:
                 continue
             source_count = int(r['relation_source_count'] or 0)
-            if len(label.split()) == 1 and kind != "ENTITY" and source_count < 2:
-                continue
+            if len(label.split()) == 1:
+                if kind not in {"ENTITY", "EVENT", "PROCESS", "PROCEDURE"}:
+                    continue
+                if kind != "ENTITY" and source_count < 2:
+                    continue
             failed_attempts = int(r["failed_growth_attempts"] or 0)
             if failed_attempts == 0:
                 success_remaining = _growth_cooldown_remaining_seconds(
