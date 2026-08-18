@@ -364,6 +364,74 @@ def test_growth_fetch_without_memory_delta_is_partial(tmp_path, monkeypatch):
         _close(runtime)
 
 
+def test_single_word_growth_requires_independent_relation_sources(tmp_path):
+    runtime = build_runtime(_settings(tmp_path))
+    try:
+        system = runtime.growth.system
+        system.engine.set_idle_growth(False)
+        target_id = system.db.upsert_concept(
+            "concept:photosynthesis",
+            "photosynthesis",
+            "photosynthesis",
+            kind="CONCEPT",
+            status="GROUNDED",
+            confidence=0.8,
+        )
+        neighbor_id = system.db.upsert_concept(
+            "concept:light-energy",
+            "light energy",
+            "light energy",
+            kind="TOPIC",
+            status="GROUNDED",
+            confidence=0.8,
+        )
+        system.db.touch_concept(target_id, 3)
+        system.db.touch_concept(neighbor_id, 3)
+
+        for index in range(2):
+            source_id = f"source:corroboration:{index}"
+            claim_id = f"claim:corroboration:{index}"
+            system.db.add_source(
+                source_id,
+                f"https://example.com/corroboration-{index}",
+                f"Corroboration {index}",
+                "test",
+                f"corroboration-{index}",
+                f"data/source_cache/corroboration-{index}.txt",
+                0.8,
+            )
+            system.db.add_claim(
+                claim_id,
+                source_id,
+                "test",
+                0,
+                "Photosynthesis uses light energy.",
+                "Photosynthesis uses light energy.",
+                0.9,
+                "GROUNDED",
+            )
+            system.db.add_relation(
+                f"relation:corroboration:{index}",
+                claim_id,
+                source_id,
+                target_id,
+                "uses",
+                neighbor_id,
+                None,
+                0.9,
+                "GROUNDED",
+            )
+            frontier_ids = {
+                item["concept_id"] for item in system.memory.frontier(limit=50)
+            }
+            if index == 0:
+                assert target_id not in frontier_ids
+            else:
+                assert target_id in frontier_ids
+    finally:
+        _close(runtime)
+
+
 def test_interaction_status_does_not_hide_active_growth_task(tmp_path):
     runtime = build_runtime(_settings(tmp_path))
     try:

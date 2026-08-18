@@ -547,6 +547,9 @@ class MemoryDB:
         return self.query(
             '''SELECT c.*, 
                 (SELECT COUNT(*) FROM relations r WHERE r.subject_id=c.concept_id OR r.object_id=c.concept_id) AS degree,
+                (SELECT COUNT(DISTINCT r.source_id) FROM relations r
+                 WHERE (r.subject_id=c.concept_id OR r.object_id=c.concept_id)
+                   AND r.source_id IS NOT NULL) AS relation_source_count,
                 (SELECT MAX(completed_at) FROM tasks t
                  WHERE t.target_concept_id=c.concept_id
                    AND t.kind IN ('IDLE_GROWTH','PRECREATED_GROWTH')
