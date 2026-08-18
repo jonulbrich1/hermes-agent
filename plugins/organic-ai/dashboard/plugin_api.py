@@ -235,7 +235,9 @@ def _http_json(
 
 def _bridge_alive() -> bool:
     try:
-        _http_json("GET", "/api/state", timeout=1.0)
+        payload = _http_json("GET", "/api/health", timeout=1.0)
+        if payload.get("status") != "healthy":
+            return False
         return True
     except Exception:
         return False
@@ -301,7 +303,9 @@ def _start_bridge() -> None:
                     f"See {log_path}."
                 )
             try:
-                _http_json("GET", "/api/state", timeout=1.0)
+                payload = _http_json("GET", "/api/health", timeout=1.0)
+                if payload.get("status") != "healthy":
+                    raise RuntimeError("Organic runtime health probe was not healthy.")
                 return
             except Exception as exc:
                 last_error = str(exc)

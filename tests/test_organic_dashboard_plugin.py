@@ -103,6 +103,19 @@ T(
     "Runtime bridge reports shared-process reachability",
     "reachable" in api._bridge_status(),
 )
+original_http_json = api._http_json
+bridge_probe_calls = []
+try:
+    api._http_json = lambda method, path, body=None, timeout=60.0: (
+        bridge_probe_calls.append((method, path, timeout)) or {"status": "healthy"}
+    )
+    bridge_probe_ok = api._bridge_alive()
+finally:
+    api._http_json = original_http_json
+T(
+    "Runtime bridge uses lightweight health probe",
+    bridge_probe_ok and bridge_probe_calls == [("GET", "/api/health", 1.0)],
+)
 
 js = (DASHBOARD / "dist" / "index.js").read_text(encoding="utf-8")
 css = (DASHBOARD / "dist" / "style.css").read_text(encoding="utf-8")
