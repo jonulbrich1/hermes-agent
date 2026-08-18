@@ -14,12 +14,9 @@ fi
 export ORGANIC_HERMES_PLUGIN_ENABLED="1"
 "${PYTHON_EXE}" "${ROOT}/scripts/ensure_organic_runtime.py"
 
-if ! command -v ollama >/dev/null 2>&1; then
-  echo "[Organic AI] Warning: Ollama is not installed or not on PATH."
-else
-  if ! ollama list 2>/dev/null | grep -qi 'qwen3:0.6b'; then
-    echo "[Organic AI] Warning: qwen3:0.6b is missing. Run: ollama pull qwen3:0.6b"
-  fi
+if [[ -n "${ORGANIC_HERMES_CHAT_MODEL:-}" ]] && ! command -v ollama >/dev/null 2>&1; then
+  echo "[Organic AI] Warning: Ollama is not installed for ${ORGANIC_HERMES_CHAT_MODEL}."
+elif [[ -n "${ORGANIC_HERMES_CHAT_MODEL:-}" ]]; then
   if ! ollama list 2>/dev/null | grep -Fqi "${ORGANIC_HERMES_CHAT_MODEL}"; then
     echo "[Organic AI] Warning: ${ORGANIC_HERMES_CHAT_MODEL} is missing. Run: ollama pull ${ORGANIC_HERMES_CHAT_MODEL}"
   fi

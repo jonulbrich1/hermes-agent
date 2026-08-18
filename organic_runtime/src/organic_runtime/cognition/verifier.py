@@ -5,8 +5,10 @@ import heapq
 import itertools
 import math
 import operator
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from fractions import Fraction
+from typing import Any
 
 from organic_processor import ProcessTrace, StructuralTask
 
@@ -107,7 +109,9 @@ def _expected_boolean_entailment(task: StructuralTask) -> tuple[bool | None, int
     for constraint in task.constraints:
         kind = constraint.get("kind")
         if kind == "entity_property":
-            facts[(str(constraint.get("entity") or ""), str(constraint.get("property") or ""))] = constraint.get("value")
+            facts[(str(constraint.get("entity") or ""), str(constraint.get("property") or ""))] = (
+                constraint.get("value")
+            )
         elif kind == "directed_relation":
             relations.append(
                 (
@@ -140,8 +144,116 @@ def _expected_boolean_entailment(task: StructuralTask) -> tuple[bool | None, int
     return bool(outcomes) and all(outcomes), len(outcomes)
 
 
+def _independent_linear_result(task: StructuralTask) -> dict[str, Any] | None:
+    """Solve again outside processor operators and verify every original equation."""
+    if any(
+        item.get("kind") not in {"linear_equation", "linear_target"}
+        for item in task.constraints
+    ):
+        return None
+    equations = [item for item in task.constraints if item.get("kind") == "linear_equation"]
+    targets = [item for item in task.constraints if item.get("kind") == "linear_target"]
+    if not equations or len(targets) != 1:
+        return None
+    variables = sorted(
+        {
+            str(name)
+            for item in (*equations, targets[0])
+            for name in (item.get("coefficients") or {})
+        }
+    )
+    if not variables or len(equations) != len(variables) or len(variables) > 16:
+        return None
+    try:
+        matrix = [
+            [
+                *[
+                    Fraction(str((item.get("coefficients") or {}).get(name, 0)))
+                    for name in variables
+                ],
+                Fraction(str(item.get("constant", 0))),
+            ]
+            for item in equations
+        ]
+        size = len(variables)
+        for column in range(size):
+            pivot = next((row for row in range(column, size) if matrix[row][column]), None)
+            if pivot is None:
+                return None
+            matrix[column], matrix[pivot] = matrix[pivot], matrix[column]
+            divisor = matrix[column][column]
+            matrix[column] = [value / divisor for value in matrix[column]]
+            for row in range(size):
+                if row == column:
+                    continue
+                factor = matrix[row][column]
+                matrix[row] = [
+                    value - factor * pivot_value
+                    for value, pivot_value in zip(matrix[row], matrix[column])
+                ]
+        exact = {name: matrix[index][-1] for index, name in enumerate(variables)}
+        if not all(
+            sum(
+                (
+                    Fraction(str(coefficient)) * exact[name]
+                    for name, coefficient in (equation.get("coefficients") or {}).items()
+                ),
+                Fraction(0),
+            )
+            == Fraction(str(equation.get("constant", 0)))
+            for equation in equations
+        ):
+            return None
+        target = Fraction(str(targets[0].get("constant", 0))) + sum(
+            (
+                Fraction(str(coefficient)) * exact[name]
+                for name, coefficient in (targets[0].get("coefficients") or {}).items()
+            ),
+            Fraction(0),
+        )
+    except (KeyError, ValueError, ZeroDivisionError):
+        return None
+    plain = lambda value: int(value) if value.denominator == 1 else float(value)
+    return {
+        "values": {name: plain(value) for name, value in exact.items()},
+        "target": plain(target),
+    }
+
+
 def verify_trace(task: StructuralTask, trace: ProcessTrace) -> TraceVerification:
-    if task.family == "order_cardinality" and task.goal == "min_distinct_count":
+    kinds = {str(item.get("kind") or "") for item in task.constraints}
+
+    if task.goal == "solve_linear_target" and kinds <= {"linear_equation", "linear_target"}:
+        expected = _independent_linear_result(task)
+        shaped = (
+            isinstance(trace.answer, dict)
+            and isinstance(trace.answer.get("values"), dict)
+            and isinstance(trace.answer.get("target"), (int, float))
+            and not isinstance(trace.answer.get("target"), bool)
+        )
+        matches = shaped and expected is not None and trace.answer == expected
+        checks = {
+            "answer_has_variable_values": shaped,
+            "all_original_equations_satisfied": bool(matches),
+            "target_independently_evaluated": bool(matches),
+            "unique_solution_verified": expected is not None,
+            "external_resources_used": False,
+        }
+        return TraceVerification(
+            accepted=bool(matches),
+            reward=1.0 if matches else -0.65,
+            result_code="verified_symbolic_linear_constraints"
+            if matches
+            else "rejected_linear_candidate",
+            checks=checks,
+            expected=expected,
+        )
+
+    if task.goal == "min_distinct_count" and kinds <= {
+        "exists_count_before",
+        "exists_count_after",
+        "exists_middle",
+    }:
         expected = _minimum_line_count(task)
         answer_is_integer = isinstance(trace.answer, int) and not isinstance(trace.answer, bool)
         constraints_hold = answer_is_integer and _line_satisfies(task, int(trace.answer))
@@ -161,11 +273,17 @@ def verify_trace(task: StructuralTask, trace: ProcessTrace) -> TraceVerification
             expected=expected,
         )
 
-    if task.family == "bounded_arithmetic" and task.goal == "evaluate_expression":
-        expressions = [item.get("expression") for item in task.constraints if item.get("kind") == "expression"]
+    if task.goal == "evaluate_expression" and kinds == {"expression"}:
+        expressions = [
+            item.get("expression") for item in task.constraints if item.get("kind") == "expression"
+        ]
         expected = _evaluate_expression(str(expressions[0])) if len(expressions) == 1 else None
         numeric = isinstance(trace.answer, (int, float)) and not isinstance(trace.answer, bool)
-        matches = numeric and expected is not None and math.isclose(float(trace.answer), expected, rel_tol=1e-12, abs_tol=1e-12)
+        matches = (
+            numeric
+            and expected is not None
+            and math.isclose(float(trace.answer), expected, rel_tol=1e-12, abs_tol=1e-12)
+        )
         checks = {
             "answer_is_numeric": numeric,
             "independent_evaluation_matches": matches,
@@ -179,7 +297,7 @@ def verify_trace(task: StructuralTask, trace: ProcessTrace) -> TraceVerification
             expected=expected,
         )
 
-    if task.family == "grounded_evidence_selection" and task.goal == "select_supported_items":
+    if task.goal == "select_supported_items" and kinds == {"grounded_candidate"}:
         qualifying = [
             (
                 float(item.get("retrieval_score", 0.0)),
@@ -217,7 +335,7 @@ def verify_trace(task: StructuralTask, trace: ProcessTrace) -> TraceVerification
             expected=expected,
         )
 
-    if task.family == "partial_order" and task.goal == "linearize_order":
+    if task.goal == "linearize_order" and kinds == {"precedes"}:
         expected = _expected_partial_order(task)
         list_result = isinstance(trace.answer, list) and all(
             isinstance(item, str) and item for item in trace.answer
@@ -237,7 +355,11 @@ def verify_trace(task: StructuralTask, trace: ProcessTrace) -> TraceVerification
             expected=expected,
         )
 
-    if task.family == "boolean_case_analysis" and task.goal == "prove_existential_relation":
+    if task.goal == "prove_existential_relation" and kinds <= {
+        "entity_property",
+        "directed_relation",
+        "exists_relation_by_property",
+    }:
         expected, case_count = _expected_boolean_entailment(task)
         boolean_result = isinstance(trace.answer, bool)
         matches = boolean_result and expected is not None and trace.answer is expected

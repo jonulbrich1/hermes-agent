@@ -19,7 +19,13 @@ ORGANIC_MEMORY_SEARCH = {
 }
 
 ORGANIC_REASON = {
-    "description": "Ask the bounded Organic Processing Core to reason over a problem and grounded context. The Semantic Interface should use this instead of performing factual/logical reasoning itself.",
+    "description": (
+        "Send a nontrivial problem to the bounded Organic Processor. For closed-world "
+        "problems, translate the user's premises into a domain-neutral structural task "
+        "without solving it. Describe the goal, typed constraints, and required reasoning "
+        "operations; Organic chooses executable primitives, verifies candidates, learns "
+        "successful compositions, and records unknown structures as durable capability gaps."
+    ),
     "parameters": {
         "type": "object",
         "properties": {
@@ -28,6 +34,81 @@ ORGANIC_REASON = {
                 "type": "array",
                 "items": {"type": "object"},
                 "description": "Grounded or explicitly labeled candidate evidence supplied to Cognition / Active Weave.",
+            },
+            "structure": {
+                "type": "object",
+                "description": (
+                    "Optional model-produced translation of user-supplied premises. "
+                    "It is untrusted input; Organic validates it and owns execution."
+                ),
+                "properties": {
+                    "family": {
+                        "type": "string",
+                        "description": (
+                            "A concise structural family hint, not a domain noun or answer. "
+                            "Examples: symbolic_linear_constraints, partial_order, "
+                            "boolean_case_analysis. Unknown families are allowed."
+                        ),
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": (
+                            "Canonical structural objective such as solve_linear_target, "
+                            "linearize_order, prove_existential_relation, compare_values, "
+                            "or search_path."
+                        ),
+                    },
+                    "required_operations": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 24,
+                        "description": (
+                            "Domain-neutral operations needed, not executable pathway names. "
+                            "Seed vocabulary — representation: DEFINE_VARIABLE, "
+                            "CREATE_CONSTANT, CREATE_RELATION, CREATE_EQUATION, SET_GOAL; "
+                            "algebra: SUBSTITUTE, ISOLATE_VARIABLE, EVALUATE_EXPRESSION, "
+                            "SIMPLIFY, SOLVE_LINEAR_SYSTEM, COMPARE_VALUES; constraints: "
+                            "PROPAGATE_CONSTRAINT, CHECK_CONSISTENCY, ENUMERATE_CASES, "
+                            "FILTER_CASES; graphs: FOLLOW_EDGE, TRANSITIVE_CLOSURE, "
+                            "TOPOLOGICAL_ORDER, FIND_PATH, MATCH_PATTERN; logic: APPLY_RULE, "
+                            "NEGATE, CONJUNCTION, DISJUNCTION, TEST_ENTAILMENT, "
+                            "FIND_COUNTEREXAMPLE; control: BRANCH, BACKTRACK, "
+                            "RANK_CANDIDATES, STOP_IF_VERIFIED; verification: "
+                            "CHECK_CONSTRAINTS, SUBSTITUTE_AND_VERIFY, VERIFY_ALL_CASES, "
+                            "VERIFY_SOLUTION, VERIFY_PROVENANCE. Unknown operation names are "
+                            "allowed and become explicit primitive frontier needs."
+                        ),
+                    },
+                    "constraints": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 64,
+                        "description": (
+                            "Typed premises only; never include a proposed answer. Preserve "
+                            "relations and unknowns explicitly. For linear equations, use "
+                            "kind=linear_equation with numeric coefficients on the left and "
+                            "constant on the right; use one kind=linear_target for the goal."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {
+                                    "type": "string",
+                                },
+                                "coefficients": {
+                                    "type": "object",
+                                    "additionalProperties": {"type": "number"},
+                                },
+                                "constant": {"type": "number", "default": 0},
+                                "label": {"type": "string"},
+                            },
+                            "required": ["kind"],
+                            "additionalProperties": True,
+                        },
+                    },
+                },
+                "required": ["family", "goal", "required_operations", "constraints"],
+                "additionalProperties": False,
             },
         },
         "required": ["problem"],
@@ -60,10 +141,23 @@ ORGANIC_SUBMIT_EVIDENCE = {
             "provenance_family": {"type": "string"},
             "source_kind": {
                 "type": "string",
-                "enum": ["WEB", "PRIMARY", "USER", "FOREIGN_GRAPH", "DOCUMENT", "OTHER"],
+                "enum": [
+                    "WEB",
+                    "PRIMARY",
+                    "USER",
+                    "FOREIGN_GRAPH",
+                    "DOCUMENT",
+                    "OTHER",
+                ],
             },
         },
-        "required": ["claim", "quote", "source_url", "provenance_family", "source_kind"],
+        "required": [
+            "claim",
+            "quote",
+            "source_url",
+            "provenance_family",
+            "source_kind",
+        ],
         "additionalProperties": False,
     },
 }
@@ -96,7 +190,12 @@ ORGANIC_GROWTH_CYCLE = {
     "parameters": {
         "type": "object",
         "properties": {
-            "max_candidates": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+            "max_candidates": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "default": 20,
+            },
         },
         "additionalProperties": False,
     },

@@ -11,12 +11,23 @@ class StructuralTask:
     family: str
     goal: str
     constraints: tuple[dict[str, Any], ...]
+    required_operations: tuple[str, ...] = ()
 
     def signature(self) -> str:
+        operations = sorted({str(item).upper() for item in self.required_operations if str(item)})
+        kinds = sorted(str(item.get("kind", "")) for item in self.constraints)
+        return f"{self.family}|{self.goal}|{'/'.join(kinds)}|{'/'.join(operations)}"
+
+    def legacy_signature(self) -> str:
         kinds = sorted(str(item.get("kind", "")) for item in self.constraints)
         return f"{self.family}|{self.goal}|{'/'.join(kinds)}"
 
     def capability_signature(self) -> str:
+        kinds = sorted({str(item.get("kind", "")) for item in self.constraints})
+        operations = sorted({str(item).upper() for item in self.required_operations if str(item)})
+        return f"{self.goal}|{'/'.join(kinds)}|{'/'.join(operations)}"
+
+    def legacy_capability_signature(self) -> str:
         kinds = sorted({str(item.get("kind", "")) for item in self.constraints})
         return f"{self.family}|{self.goal}|{'/'.join(kinds)}"
 
@@ -25,17 +36,21 @@ class StructuralTask:
             "family": self.family,
             "goal": self.goal,
             "constraints": [dict(item) for item in self.constraints],
+            "required_operations": list(self.required_operations),
         }
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "StructuralTask":
+    def from_dict(cls, value: dict[str, Any]) -> StructuralTask:
         constraints = value.get("constraints")
         if not isinstance(constraints, list):
-            raise ValueError("Structural task constraints must be a list")
+            raise TypeError("Structural task constraints must be a list")
         return cls(
             family=str(value.get("family") or ""),
             goal=str(value.get("goal") or ""),
             constraints=tuple(dict(item) for item in constraints if isinstance(item, dict)),
+            required_operations=tuple(
+                str(item) for item in (value.get("required_operations") or []) if str(item)
+            ),
         )
 
 

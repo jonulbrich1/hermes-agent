@@ -2,6 +2,7 @@
 
 Mounted by the Hermes dashboard at /api/plugins/organic-ai/.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +22,7 @@ import urllib.request
 try:
     from fastapi import APIRouter, HTTPException
 except Exception:  # Allows lightweight import checks without dashboard deps.
+
     class APIRouter:  # type: ignore[no-redef]
         def get(self, *_args, **_kwargs):
             return lambda fn: fn
@@ -50,20 +52,27 @@ def _project_root() -> Path:
 
 def _organic_paths() -> dict[str, str]:
     root = _project_root()
-    home = Path(os.environ.get("ORGANIC_HOME") or root / "runtime" / "organic_home").resolve()
+    home = Path(
+        os.environ.get("ORGANIC_HOME") or root / "runtime" / "organic_home"
+    ).resolve()
     return {
         "project_root": str(root),
         "home": str(home),
-        "mvp_data_dir": str(Path(os.environ.get("ORGANIC_MVP_DATA_DIR") or home / "mvp").resolve()),
-        "trace_dir": str(Path(os.environ.get("ORGANIC_TRACE_DIR") or home / "traces").resolve()),
-        "review_dir": str(Path(os.environ.get("ORGANIC_REVIEW_DIR") or root / "reveiw").resolve()),
+        "mvp_data_dir": str(
+            Path(os.environ.get("ORGANIC_MVP_DATA_DIR") or home / "mvp").resolve()
+        ),
+        "trace_dir": str(
+            Path(os.environ.get("ORGANIC_TRACE_DIR") or home / "traces").resolve()
+        ),
+        "review_dir": str(
+            Path(os.environ.get("ORGANIC_REVIEW_DIR") or root / "reveiw").resolve()
+        ),
         "runtime_src": str((root / "organic_runtime" / "src").resolve()),
     }
 
 
 def _default_env() -> dict[str, str]:
     paths = _organic_paths()
-    hermes_chat_model = os.environ.get("ORGANIC_HERMES_CHAT_MODEL", "gemma4:e2b")
     return {
         "ORGANIC_PROJECT_ROOT": paths["project_root"],
         "ORGANIC_HOME": paths["home"],
@@ -74,19 +83,12 @@ def _default_env() -> dict[str, str]:
         "ORGANIC_IDLE_GROWTH_ENABLED": "1",
         "ORGANIC_WEB_PROVIDER": "auto",
         "ORGANIC_PROCESSOR_MAX_CYCLES": "16",
-        "ORGANIC_SEMANTIC_MODE": "pydantic",
-        "ORGANIC_MODEL": "ollama:qwen3:0.6b",
+        "ORGANIC_SEMANTIC_MODE": "heuristic",
+        "ORGANIC_MODEL": "inherit",
         "ORGANIC_HERMES_MODE": "1",
         "ORGANIC_SEMANTIC_INTERFACE": "1",
-        "ORGANIC_HERMES_CHAT_MODEL": hermes_chat_model,
         "OLLAMA_BASE_URL": "http://127.0.0.1:11434/v1",
         "HERMES_TUI_TOOLSETS": "all",
-        "HERMES_MODEL": hermes_chat_model,
-        "HERMES_INFERENCE_MODEL": hermes_chat_model,
-        "HERMES_TUI_PROVIDER": "custom",
-        "HERMES_INFERENCE_PROVIDER": "custom",
-        "CUSTOM_BASE_URL": "http://127.0.0.1:11434/v1",
-        "OPENAI_API_KEY": "no-key-required",
     }
 
 
@@ -107,9 +109,15 @@ def _safe_counts(paths: dict[str, str]) -> dict[str, int]:
     root = Path(paths["mvp_data_dir"])
     review_dir = Path(paths["review_dir"])
     return {
-        "run_results": len(list((root / "run_results").glob("*.json"))) if root.exists() else 0,
-        "review_packages": len(list((root / "review_packages").glob("*.zip"))) if root.exists() else 0,
-        "review_mirror_packages": len(list(review_dir.glob("*.zip"))) if review_dir.exists() else 0,
+        "run_results": len(list((root / "run_results").glob("*.json")))
+        if root.exists()
+        else 0,
+        "review_packages": len(list((root / "review_packages").glob("*.zip")))
+        if root.exists()
+        else 0,
+        "review_mirror_packages": len(list(review_dir.glob("*.zip")))
+        if review_dir.exists()
+        else 0,
     }
 
 
@@ -118,13 +126,20 @@ def _mcp_server_config() -> dict[str, Any]:
     root = _project_root()
     runtime_src = str((root / "organic_runtime" / "src").resolve())
     venv_python = _runtime_venv_python()
-    command = str(venv_python if venv_python.exists() else Path(sys.executable).resolve())
+    command = str(
+        venv_python if venv_python.exists() else Path(sys.executable).resolve()
+    )
     env = _default_env()
     env["ORGANIC_RUNTIME_URL"] = _bridge_base_url()
     existing_pythonpath = os.environ.get("PYTHONPATH") or ""
-    env["PYTHONPATH"] = os.pathsep.join(
-        [runtime_src, *[part for part in existing_pythonpath.split(os.pathsep) if part and part != runtime_src]]
-    )
+    env["PYTHONPATH"] = os.pathsep.join([
+        runtime_src,
+        *[
+            part
+            for part in existing_pythonpath.split(os.pathsep)
+            if part and part != runtime_src
+        ],
+    ])
     return {
         "command": command,
         "args": ["-m", "organic_runtime", "mcp"],
@@ -185,12 +200,18 @@ def _bridge_status(error: str | None = None) -> dict[str, Any]:
         "process_known": proc is not None,
         "process_running": reachable,
         "reachable": reachable,
-        "ownership": "dashboard_child" if child_running else "shared_external" if reachable else "none",
+        "ownership": "dashboard_child"
+        if child_running
+        else "shared_external"
+        if reachable
+        else "none",
         "error": error,
     }
 
 
-def _http_json(method: str, path: str, body: dict[str, Any] | None = None, timeout: float = 60.0) -> dict[str, Any]:
+def _http_json(
+    method: str, path: str, body: dict[str, Any] | None = None, timeout: float = 60.0
+) -> dict[str, Any]:
     url = _bridge_base_url() + path
     data = None
     headers: dict[str, str] = {"Accept": "application/json"}
@@ -242,7 +263,11 @@ def _start_bridge() -> None:
         log_dir = Path(paths["home"]) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "dashboard_bridge.log"
-        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        flags = (
+            subprocess.CREATE_NO_WINDOW
+            if hasattr(subprocess, "CREATE_NO_WINDOW")
+            else 0
+        )
         log_file = log_path.open("ab")
         try:
             _BRIDGE_PROCESS = subprocess.Popen(
@@ -284,7 +309,9 @@ def _start_bridge() -> None:
         raise RuntimeError(f"Organic runtime bridge did not become ready: {last_error}")
 
 
-def _bridge_request(method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+def _bridge_request(
+    method: str, path: str, body: dict[str, Any] | None = None
+) -> dict[str, Any]:
     _start_bridge()
     api_path = path if path.startswith("/api/") else "/api" + path
     return _http_json(method, api_path, body=body, timeout=180.0)
@@ -294,7 +321,9 @@ async def _runtime_get(path: str) -> dict[str, Any]:
     return await asyncio.to_thread(_bridge_request, "GET", path, None)
 
 
-async def _runtime_post(path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+async def _runtime_post(
+    path: str, body: dict[str, Any] | None = None
+) -> dict[str, Any]:
     return await asyncio.to_thread(_bridge_request, "POST", path, body or {})
 
 
@@ -320,7 +349,11 @@ def _mcp_status() -> dict[str, Any]:
 
         raw_status = get_mcp_status() or []
         if isinstance(raw_status, list):
-            live_status = [entry for entry in raw_status if "organic" in str(entry.get("name") or "").lower()]
+            live_status = [
+                entry
+                for entry in raw_status
+                if "organic" in str(entry.get("name") or "").lower()
+            ]
     except Exception:
         live_status = []
 
@@ -333,7 +366,8 @@ def _mcp_status() -> dict[str, Any]:
 
     return {
         "configured": configured is not None,
-        "enabled": configured is not None and configured.get("enabled", True) is not False,
+        "enabled": configured is not None
+        and configured.get("enabled", True) is not False,
         "connected": any(bool(entry.get("connected")) for entry in live_status),
         "status": live_status,
         "discovery_in_flight": discovery_in_flight,
@@ -391,19 +425,25 @@ def _fallback_state(error: BaseException | str) -> dict[str, Any]:
         },
         "backend": os.environ.get("ORGANIC_BACKEND") or env["ORGANIC_BACKEND"],
         "settings": {
-            "semantic_mode": os.environ.get("ORGANIC_SEMANTIC_MODE") or env["ORGANIC_SEMANTIC_MODE"],
+            "semantic_mode": os.environ.get("ORGANIC_SEMANTIC_MODE")
+            or env["ORGANIC_SEMANTIC_MODE"],
             "semantic_adapter": "unavailable",
             "model": os.environ.get("ORGANIC_MODEL") or env["ORGANIC_MODEL"],
-            "ollama_base_url": os.environ.get("OLLAMA_BASE_URL") or env["OLLAMA_BASE_URL"],
+            "ollama_base_url": os.environ.get("OLLAMA_BASE_URL")
+            or env["OLLAMA_BASE_URL"],
         },
         "pydantic_ai_available": importlib.util.find_spec("pydantic_ai") is not None,
         "engine": {
             "running": False,
-            "idle_growth_enabled": os.environ.get("ORGANIC_IDLE_GROWTH_ENABLED", "1") != "0",
+            "idle_growth_enabled": os.environ.get("ORGANIC_IDLE_GROWTH_ENABLED", "1")
+            != "0",
             "external_user_active": False,
         },
         "counts": {},
-        "web": {"mode": os.environ.get("ORGANIC_WEB_PROVIDER") or env["ORGANIC_WEB_PROVIDER"]},
+        "web": {
+            "mode": os.environ.get("ORGANIC_WEB_PROVIDER")
+            or env["ORGANIC_WEB_PROVIDER"]
+        },
         "rolling_context": {},
         "run_result_count": _safe_counts(paths)["run_results"],
         "review_package_count": _safe_counts(paths)["review_packages"],
@@ -421,15 +461,25 @@ async def _call_app(method_name: str, *args: Any) -> Any:
 
 def _enhance_state(state: dict[str, Any]) -> dict[str, Any]:
     paths = _organic_paths()
+    configured_model = ""
+    try:
+        from hermes_cli.config import load_config
+
+        configured_model = str(load_config().get("model") or "")
+    except Exception:
+        configured_model = ""
     state["paths"] = paths
     state["mcp"] = _mcp_status()
     state["bridge"] = state.get("bridge") or _bridge_status()
     state["startup_error"] = _APP_ERROR or state.get("startup_error")
     state["hermes_chat"] = {
-        "toolsets": os.environ.get("HERMES_TUI_TOOLSETS") or _default_env()["HERMES_TUI_TOOLSETS"],
-        "provider": os.environ.get("HERMES_TUI_PROVIDER") or _default_env()["HERMES_TUI_PROVIDER"],
-        "model": os.environ.get("HERMES_MODEL") or _default_env()["HERMES_MODEL"],
-        "base_url": os.environ.get("CUSTOM_BASE_URL") or _default_env()["CUSTOM_BASE_URL"],
+        "toolsets": os.environ.get("HERMES_TUI_TOOLSETS")
+        or _default_env()["HERMES_TUI_TOOLSETS"],
+        "provider": os.environ.get("HERMES_TUI_PROVIDER") or "configured by Hermes",
+        "model": os.environ.get("HERMES_MODEL")
+        or configured_model
+        or "configured by Hermes",
+        "base_url": os.environ.get("CUSTOM_BASE_URL"),
     }
     state["mcp_server_template"] = {
         "command": _mcp_server_config()["command"],
@@ -440,7 +490,12 @@ def _enhance_state(state: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/health")
 async def health() -> dict[str, Any]:
-    return {"ok": True, "plugin": "organic-ai", "paths": _organic_paths(), "mcp": _mcp_status()}
+    return {
+        "ok": True,
+        "plugin": "organic-ai",
+        "paths": _organic_paths(),
+        "mcp": _mcp_status(),
+    }
 
 
 @router.get("/state")
@@ -494,7 +549,15 @@ async def packages(limit: int = 10) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     paths = _organic_paths()
     review_dir = Path(paths["review_dir"])
-    mirrored = sorted(review_dir.glob("*.zip"), key=lambda item: item.stat().st_mtime, reverse=True) if review_dir.exists() else []
+    mirrored = (
+        sorted(
+            review_dir.glob("*.zip"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        if review_dir.exists()
+        else []
+    )
     data["mirrored_packages"] = [
         {
             "name": path.name,

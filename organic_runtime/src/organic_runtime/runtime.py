@@ -8,6 +8,7 @@ from organic_runtime.contracts import (
     CognitiveResourcePlan,
     CoreRequest,
     GateContext,
+    IntentEnvelope,
     Route,
     RuntimeResponse,
 )
@@ -92,7 +93,11 @@ class OrganicRuntime:
             if callable(recorder):
                 recorder(request, response)
 
-    async def handle(self, request: str) -> RuntimeResponse:
+    async def handle(
+        self,
+        request: str,
+        semantic_envelope: IntentEnvelope | dict | None = None,
+    ) -> RuntimeResponse:
         if not request or not request.strip():
             raise ValueError("Request must not be empty.")
 
@@ -113,7 +118,21 @@ class OrganicRuntime:
 
         try:
             print(f"[runtime] trace={trace_id} request={request!r}")
-            envelope = await self.semantic.analyze(request, initial_state)
+            if semantic_envelope is None:
+                envelope = await self.semantic.analyze(request, initial_state)
+            else:
+                envelope = (
+                    semantic_envelope
+                    if isinstance(semantic_envelope, IntentEnvelope)
+                    else IntentEnvelope.model_validate(semantic_envelope)
+                )
+                if envelope.original_request != request:
+                    envelope = envelope.model_copy(update={"original_request": request})
+                self.traces.record(
+                    trace_id,
+                    "semantic_envelope_supplied",
+                    {"source": "hermes_tool_call", "trusted": False},
+                )
             self.traces.record(
                 trace_id,
                 "semantic_envelope",
@@ -171,7 +190,8 @@ class OrganicRuntime:
             self.traces.record(trace_id, "route_executed", route_metadata)
             presenter = getattr(self.semantic, "present_result", None)
             if callable(presenter) and decision.route.value not in {
-                "conversation", "internal_state"
+                "conversation",
+                "internal_state",
             }:
                 organic_answer = answer
                 answer = await presenter(request, envelope, organic_answer, route_metadata)
@@ -188,7 +208,8 @@ class OrganicRuntime:
                 )
             completeness_reviewer = getattr(self.semantic, "review_completeness", None)
             if callable(completeness_reviewer) and decision.route.value not in {
-                "conversation", "internal_state"
+                "conversation",
+                "internal_state",
             }:
                 semantic_review = await completeness_reviewer(
                     request,
@@ -262,9 +283,7 @@ class OrganicRuntime:
                             route_metadata,
                         )
                         route_metadata["semantic_interface_presented"] = True
-                        route_metadata["organic_result_length"] = len(
-                            refined_organic_answer
-                        )
+                        route_metadata["organic_result_length"] = len(refined_organic_answer)
                         self.traces.record(
                             trace_id,
                             "semantic_interface_presentation",
@@ -360,9 +379,7 @@ class OrganicRuntime:
                     "trace_id": trace_id,
                     "error": str(exc),
                     "cost_units": sum(step.budget for step in resource_plan.steps),
-                    "authorized_budget_units": sum(
-                        step.budget for step in resource_plan.steps
-                    ),
+                    "authorized_budget_units": sum(step.budget for step in resource_plan.steps),
                 }
                 try:
                     self.planner.record_outcome(resource_plan, False, outcome)

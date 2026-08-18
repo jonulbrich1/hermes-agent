@@ -5,13 +5,277 @@ import heapq
 import itertools
 import math
 import operator
-from typing import Any, Callable
+from collections.abc import Callable
+from fractions import Fraction
+from typing import Any
 
 from .types import StructuralTask
 
 
 class OperatorError(RuntimeError):
     pass
+
+
+def _fraction(value: Any) -> Fraction:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise OperatorError("Linear coefficients must be finite numbers")
+    result = Fraction(str(value))
+    if (
+        abs(result) > 10**12
+        or abs(result.numerator) > 10**18
+        or result.denominator > 10**18
+    ):
+        raise OperatorError("Linear coefficient exceeds the processor budget")
+    return result
+
+
+def _plain_number(value: Fraction) -> int | float:
+    return int(value) if value.denominator == 1 else float(value)
+
+
+def define_linear_system(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    equations = [item for item in task.constraints if item.get("kind") == "linear_equation"]
+    targets = [item for item in task.constraints if item.get("kind") == "linear_target"]
+    if not equations or len(targets) != 1 or len(equations) > 16:
+        raise OperatorError("A bounded linear task needs equations and exactly one target")
+    variables = sorted(
+        {
+            str(name).strip()
+            for item in (*equations, targets[0])
+            for name in (item.get("coefficients") or {})
+            if str(name).strip()
+        }
+    )
+    if not variables or len(variables) > 16 or len(equations) != len(variables):
+        raise OperatorError("Linear system must be square and contain 1-16 variables")
+    rows = []
+    for equation in equations:
+        coefficients = equation.get("coefficients")
+        if not isinstance(coefficients, dict) or not coefficients:
+            raise OperatorError("Each linear equation needs coefficients")
+        rows.append(
+            [
+                *[_plain_number(_fraction(coefficients.get(name, 0))) for name in variables],
+                _plain_number(_fraction(equation.get("constant", 0))),
+            ]
+        )
+    return {
+        **state,
+        "linear_variables": variables,
+        "linear_rows": rows,
+        "linear_target": dict(targets[0]),
+    }
+
+
+def solve_linear_system(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    variables = list(state.get("linear_variables") or [])
+    matrix = [[_fraction(value) for value in row] for row in state.get("linear_rows") or []]
+    size = len(variables)
+    if len(matrix) != size:
+        raise OperatorError("Linear system is incomplete")
+    for column in range(size):
+        pivot = next((row for row in range(column, size) if matrix[row][column] != 0), None)
+        if pivot is None:
+            raise OperatorError("Linear system has no unique solution")
+        matrix[column], matrix[pivot] = matrix[pivot], matrix[column]
+        divisor = matrix[column][column]
+        matrix[column] = [value / divisor for value in matrix[column]]
+        for row in range(size):
+            if row == column:
+                continue
+            factor = matrix[row][column]
+            matrix[row] = [
+                value - factor * pivot_value
+                for value, pivot_value in zip(matrix[row], matrix[column])
+            ]
+    solution = {name: _plain_number(matrix[index][-1]) for index, name in enumerate(variables)}
+    return {**state, "linear_solution": solution}
+
+
+def evaluate_linear_target(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    target = state.get("linear_target") or {}
+    solution = state.get("linear_solution") or {}
+    coefficients = target.get("coefficients") or {}
+    value = _fraction(target.get("constant", 0))
+    for name, coefficient in coefficients.items():
+        if name not in solution:
+            raise OperatorError(f"Target references unknown variable {name!r}")
+        value += _fraction(coefficient) * _fraction(solution[name])
+    return {**state, "linear_target_value": _plain_number(value)}
+
+
+def check_linear_constraints(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    solution = state.get("linear_solution") or {}
+    valid = True
+    for equation in task.constraints:
+        if equation.get("kind") != "linear_equation":
+            continue
+        total = sum(
+            (
+                _fraction(coefficient) * _fraction(solution.get(name, 0))
+                for name, coefficient in (equation.get("coefficients") or {}).items()
+            ),
+            Fraction(0),
+        )
+        valid = valid and total == _fraction(equation.get("constant", 0))
+    if not valid:
+        raise OperatorError("Solved values do not satisfy every original equation")
+    return {**state, "linear_constraints_valid": True}
+
+
+def emit_linear_result(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    if not state.get("linear_constraints_valid"):
+        raise OperatorError("Linear solution has not passed constraint checks")
+    return {
+        **state,
+        "answer": {
+            "values": dict(state.get("linear_solution") or {}),
+            "target": state.get("linear_target_value"),
+        },
+    }
+
+
+def define_variable(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    variables = sorted(
+        {
+            str(name).strip()
+            for item in task.constraints
+            for name in (item.get("coefficients") or {})
+            if str(name).strip()
+        }
+    )
+    if not variables or len(variables) > 16:
+        raise OperatorError("Expected 1-16 bounded symbolic variables")
+    return {**state, "variables": variables, "linear_variables": variables}
+
+
+def create_equation(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    variables = list(state.get("variables") or [])
+    if not variables:
+        raise OperatorError("Variables must be defined before equations")
+    equations = [item for item in task.constraints if item.get("kind") == "linear_equation"]
+    targets = [item for item in task.constraints if item.get("kind") == "linear_target"]
+    if len(equations) != len(variables) or len(targets) != 1:
+        raise OperatorError("A square equation system and exactly one target are required")
+    rows = [
+        [
+            *[
+                _plain_number(_fraction((equation.get("coefficients") or {}).get(name, 0)))
+                for name in variables
+            ],
+            _plain_number(_fraction(equation.get("constant", 0))),
+        ]
+        for equation in equations
+    ]
+    return {**state, "linear_rows": rows, "linear_target": dict(targets[0])}
+
+
+def substitute(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    matrix = [[_fraction(value) for value in row] for row in state.get("linear_rows") or []]
+    size = len(matrix)
+    if not size or any(len(row) != size + 1 for row in matrix):
+        raise OperatorError("Substitution requires a square augmented matrix")
+    for column in range(size):
+        pivot = next((row for row in range(column, size) if matrix[row][column]), None)
+        if pivot is None:
+            raise OperatorError("Linear system has no unique substitution pivot")
+        matrix[column], matrix[pivot] = matrix[pivot], matrix[column]
+        divisor = matrix[column][column]
+        matrix[column] = [value / divisor for value in matrix[column]]
+        for row in range(column + 1, size):
+            factor = matrix[row][column]
+            matrix[row] = [
+                value - factor * pivot_value
+                for value, pivot_value in zip(matrix[row], matrix[column])
+            ]
+    return {
+        **state,
+        "linear_echelon": [[_plain_number(value) for value in row] for row in matrix],
+    }
+
+
+def isolate_variable(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    variables = list(state.get("variables") or [])
+    matrix = [[_fraction(value) for value in row] for row in state.get("linear_echelon") or []]
+    size = len(variables)
+    if len(matrix) != size:
+        raise OperatorError("Isolation requires an echelon row for every variable")
+    solution = [Fraction(0) for _ in range(size)]
+    for row in range(size - 1, -1, -1):
+        rhs = matrix[row][-1] - sum(
+            (matrix[row][column] * solution[column] for column in range(row + 1, size)),
+            Fraction(0),
+        )
+        if matrix[row][row] == 0:
+            raise OperatorError("Linear system has no unique isolated solution")
+        solution[row] = rhs / matrix[row][row]
+    return {
+        **state,
+        "linear_solution": {
+            name: _plain_number(solution[index]) for index, name in enumerate(variables)
+        },
+    }
+
+
+def evaluate_expression(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    evaluated = evaluate_linear_target(state, task)
+    return {**evaluated, "target_value": evaluated["linear_target_value"]}
+
+
+def verify_solution(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    checked = check_linear_constraints(state, task)
+    if "target_value" not in checked:
+        raise OperatorError("The requested target has not been evaluated")
+    return {**checked, "verified": True}
+
+
+def create_relation(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    collected = collect_partial_order(state, task)
+    return {**collected, "relations": list(collected["edges"])}
+
+
+def topological_order(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    ordered = topological_linearize(state, task)
+    return {**ordered, "verified": bool(ordered.get("order_valid"))}
+
+
+def enumerate_cases(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    return enumerate_unknown_assignments(state, task)
+
+
+def test_entailment(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    return evaluate_existential_relation(state, task)
+
+
+def verify_all_cases(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    cases = state.get("case_results")
+    if not isinstance(cases, list) or not cases or "entailed" not in state:
+        raise OperatorError("Case verification requires evaluated bounded cases")
+    return {**state, "verified": True, "entailment_valid": True}
+
+
+def stop_if_verified(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    del task
+    if not state.get("verified"):
+        raise OperatorError("Cannot stop before deterministic verification")
+    if "linear_solution" in state and "target_value" in state:
+        answer: Any = {
+            "values": dict(state["linear_solution"]),
+            "target": state["target_value"],
+        }
+    elif isinstance(state.get("ordered"), list):
+        answer = list(state["ordered"])
+    elif "entailed" in state:
+        answer = bool(state["entailed"])
+    else:
+        raise OperatorError("Verified state has no bounded result to emit")
+    return {**state, "answer": answer}
 
 
 def _counts(task: StructuralTask) -> tuple[list[int], list[int], bool]:
@@ -96,7 +360,9 @@ def emit_model_cardinality(state: dict[str, Any], task: StructuralTask) -> dict[
 
 
 def evaluate_bounded_expression(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
-    expressions = [item.get("expression") for item in task.constraints if item.get("kind") == "expression"]
+    expressions = [
+        item.get("expression") for item in task.constraints if item.get("kind") == "expression"
+    ]
     if len(expressions) != 1 or not isinstance(expressions[0], str):
         raise OperatorError("Exactly one arithmetic expression is required")
     expression = expressions[0]
@@ -313,4 +579,23 @@ OPERATORS = {
     "ENUMERATE_UNKNOWN_ASSIGNMENTS": enumerate_unknown_assignments,
     "EVALUATE_EXISTENTIAL_RELATION": evaluate_existential_relation,
     "EMIT_ENTAILMENT": emit_entailment,
+    "DEFINE_LINEAR_SYSTEM": define_linear_system,
+    "SOLVE_LINEAR_SYSTEM": solve_linear_system,
+    "EVALUATE_LINEAR_TARGET": evaluate_linear_target,
+    "CHECK_LINEAR_CONSTRAINTS": check_linear_constraints,
+    "EMIT_LINEAR_RESULT": emit_linear_result,
+    "DEFINE_VARIABLE": define_variable,
+    "CREATE_EQUATION": create_equation,
+    "SUBSTITUTE": substitute,
+    "ISOLATE_VARIABLE": isolate_variable,
+    "EVALUATE_EXPRESSION": evaluate_expression,
+    "VERIFY_SOLUTION": verify_solution,
+    "SUBSTITUTE_AND_VERIFY": verify_solution,
+    "CHECK_CONSTRAINTS": verify_solution,
+    "CREATE_RELATION": create_relation,
+    "TOPOLOGICAL_ORDER": topological_order,
+    "ENUMERATE_CASES": enumerate_cases,
+    "TEST_ENTAILMENT": test_entailment,
+    "VERIFY_ALL_CASES": verify_all_cases,
+    "STOP_IF_VERIFIED": stop_if_verified,
 }

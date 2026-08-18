@@ -156,6 +156,7 @@ class CognitiveResourcePlanner:
         signature = [
             "closed_world",
             capability,
+            *sorted(str(item).lower() for item in envelope.required_operations),
             *sorted(
                 str(item.get("kind") or "constraint")
                 for item in envelope.structural_constraints
@@ -206,7 +207,10 @@ class CognitiveResourcePlanner:
                 "All required premises are present in the user request.",
                 "External factual retrieval cannot improve a closed-world logical result.",
             ],
-            metadata={"planning_policy": "deterministic_scored_v1"},
+            metadata={
+                "planning_policy": "deterministic_scored_v1",
+                "required_operations": list(envelope.required_operations),
+            },
         )
 
     def _growth_plan(self, envelope: IntentEnvelope, route: Route) -> CognitiveResourcePlan:

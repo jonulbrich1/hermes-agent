@@ -36,17 +36,15 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-where ollama >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo [Organic AI] Warning: Ollama was not found. The Organic tab will show the Qwen connection error.
-) else (
-    ollama list | findstr /I /C:"qwen3:0.6b" >nul 2>&1
+if defined ORGANIC_HERMES_CHAT_MODEL (
+    where ollama >nul 2>&1
     if %ERRORLEVEL% NEQ 0 (
-        echo [Organic AI] Warning: qwen3:0.6b is missing. Run: ollama pull qwen3:0.6b
-    )
+        echo [Organic AI] Warning: Ollama was not found for %ORGANIC_HERMES_CHAT_MODEL%.
+    ) else (
     ollama list | findstr /I /C:"%ORGANIC_HERMES_CHAT_MODEL%" >nul 2>&1
     if %ERRORLEVEL% NEQ 0 (
         echo [Organic AI] Warning: %ORGANIC_HERMES_CHAT_MODEL% is missing. Run: ollama pull %ORGANIC_HERMES_CHAT_MODEL%
+    )
     )
 )
 

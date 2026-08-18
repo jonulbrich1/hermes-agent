@@ -63,6 +63,7 @@ def _infer_partial_order(text: str) -> dict[str, Any] | None:
         "sufficient_premises": True,
         "reasoning_family": "partial_order",
         "reasoning_goal": "linearize_order",
+        "required_operations": ["CREATE_RELATION", "TOPOLOGICAL_ORDER", "STOP_IF_VERIFIED"],
         "structural_constraints": [
             {"kind": "precedes", "before": before, "after": after}
             for before, after in unique_edges
@@ -120,6 +121,12 @@ def _infer_boolean_case_analysis(text: str) -> dict[str, Any] | None:
         "sufficient_premises": True,
         "reasoning_family": "boolean_case_analysis",
         "reasoning_goal": "prove_existential_relation",
+        "required_operations": [
+            "ENUMERATE_CASES",
+            "TEST_ENTAILMENT",
+            "VERIFY_ALL_CASES",
+            "STOP_IF_VERIFIED",
+        ],
         "structural_constraints": [
             *relations,
             *properties,
@@ -155,6 +162,7 @@ def infer_structural_fields(request: str) -> dict[str, Any] | None:
             "sufficient_premises": True,
             "reasoning_family": "order_cardinality",
             "reasoning_goal": "min_distinct_count",
+            "required_operations": ["PROPAGATE_CONSTRAINT", "COMPARE_VALUES", "VERIFY_SOLUTION"],
             "structural_constraints": [
                 {"kind": "exists_count_before", "count": _number(front.group("n"))},
                 {"kind": "exists_count_after", "count": _number(behind.group("n"))},
@@ -172,6 +180,7 @@ def infer_structural_fields(request: str) -> dict[str, Any] | None:
             "sufficient_premises": True,
             "reasoning_family": "bounded_arithmetic",
             "reasoning_goal": "evaluate_expression",
+            "required_operations": ["EVALUATE_EXPRESSION", "VERIFY_SOLUTION"],
             "structural_constraints": [
                 {"kind": "expression", "expression": expression.group(1).strip()}
             ],
@@ -191,6 +200,7 @@ def compile_structural_task(envelope: IntentEnvelope) -> StructuralTask | None:
         family=envelope.reasoning_family,
         goal=envelope.reasoning_goal,
         constraints=constraints,
+        required_operations=tuple(envelope.required_operations),
     )
 
 

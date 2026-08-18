@@ -623,7 +623,9 @@ class GuiApp:
             review_package_count = len(list((system.root / "review_packages").glob("*.zip")))
             project_root = os.environ.get("ORGANIC_PROJECT_ROOT")
             if project_root:
-                hermes_review_package_count = len(list((Path(project_root) / "reveiw").glob("*.zip")))
+                hermes_review_package_count = len(
+                    list((Path(project_root) / "reveiw").glob("*.zip"))
+                )
         return {
             "runtime": self.runtime.state.snapshot().model_dump(mode="json"),
             "backend": backend,
@@ -677,11 +679,26 @@ class GuiApp:
                 for descriptor in self.runtime.tools.descriptors()
             ],
             "mvp_tools": [
-                {"name": "organic.ask", "description": "Send a request through the full Organic runtime."},
-                {"name": "organic.state", "description": "Read runtime, Organic Engine, growth, memory, and web status."},
-                {"name": "organic.run_growth", "description": "Request one or more background growth cycles."},
-                {"name": "organic.set_idle_growth", "description": "Enable or disable idle growth."},
-                {"name": "organic.export_review", "description": "Create a ZIP package with traces, logs, DB reports, sources, run results, processor state, and redacted config."},
+                {
+                    "name": "organic.ask",
+                    "description": "Send a request through the full Organic runtime.",
+                },
+                {
+                    "name": "organic.state",
+                    "description": "Read runtime, Organic Engine, growth, memory, and web status.",
+                },
+                {
+                    "name": "organic.run_growth",
+                    "description": "Request one or more background growth cycles.",
+                },
+                {
+                    "name": "organic.set_idle_growth",
+                    "description": "Enable or disable idle growth.",
+                },
+                {
+                    "name": "organic.export_review",
+                    "description": "Create a ZIP package with traces, logs, DB reports, sources, run results, processor state, and redacted config.",
+                },
             ],
         }
 
@@ -713,11 +730,15 @@ class GuiApp:
         path = system.export_review(reason or "manual_gui")
         return {"ok": True, "path": path}
 
-    def ask(self, text: str) -> dict[str, Any]:
+    def ask(
+        self,
+        text: str,
+        semantic_envelope: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if not text.strip():
             raise ValueError("Message must not be empty.")
         with self.lock:
-            response = asyncio.run(self.runtime.handle(text))
+            response = asyncio.run(self.runtime.handle(text, semantic_envelope=semantic_envelope))
         return response.model_dump(mode="json")
 
     def set_idle(self, enabled: bool) -> dict[str, Any]:
@@ -813,7 +834,15 @@ class GuiHandler(BaseHTTPRequestHandler):
         try:
             body = self.read_json()
             if path == "/api/message":
-                self.send_json(self.app.ask(str(body.get("text") or "")))
+                supplied = body.get("semantic_envelope")
+                if supplied is not None and not isinstance(supplied, dict):
+                    raise ValueError("semantic_envelope must be an object")
+                self.send_json(
+                    self.app.ask(
+                        str(body.get("text") or ""),
+                        semantic_envelope=supplied,
+                    )
+                )
                 return
             if path == "/api/idle":
                 self.send_json(self.app.set_idle(bool(body.get("enabled"))))
@@ -848,7 +877,9 @@ def run_gui(host: str = "127.0.0.1", port: int = 8787, open_browser: bool = True
     url = f"http://{host}:{port}/"
     print(f"[gui] Organic AI Runtime GUI started at {url}")
     if open_browser:
-        threading.Thread(target=lambda: (time.sleep(0.75), webbrowser.open(url)), daemon=True).start()
+        threading.Thread(
+            target=lambda: (time.sleep(0.75), webbrowser.open(url)), daemon=True
+        ).start()
     try:
         server.serve_forever()
         return 0
@@ -865,4 +896,6 @@ def add_gui_parser(subparsers: argparse._SubParsersAction) -> None:
     gui = subparsers.add_parser("gui", help="Run the local browser GUI")
     gui.add_argument("--host", default="127.0.0.1", help="Host interface for the GUI")
     gui.add_argument("--port", type=int, default=8787, help="Port for the GUI")
-    gui.add_argument("--no-open", action="store_true", help="Start the GUI without opening a browser")
+    gui.add_argument(
+        "--no-open", action="store_true", help="Start the GUI without opening a browser"
+    )

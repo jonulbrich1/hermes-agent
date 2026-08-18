@@ -34,7 +34,7 @@ class LlamaCppSemanticInterface:
         self.config = config
         self.logger = logger
         self.endpoint = str(config.get("semantic_endpoint", "http://127.0.0.1:8081/v1")).rstrip("/")
-        self.model = str(config.get("semantic_model", "Qwen3-0.6B-GGUF"))
+        self.model = str(config.get("semantic_model", "auto"))
         self.timeout = float(config.get("semantic_timeout_seconds", 120))
         self.temperature = float(config.get("semantic_temperature", 0.15))
         self.enabled = bool(config.get("semantic_agent_enabled", True))
@@ -127,7 +127,7 @@ class LlamaCppSemanticInterface:
         prompt = {"role": "user", "content": json.dumps({"user_text": text, "system_state": state_summary}, ensure_ascii=False)}
         msg = self.chat([{"role": "system", "content": system}, prompt], tools=None, max_tokens=280)
         raw = self._content(msg).strip()
-        # Qwen may wrap JSON in markdown despite instructions; peel the outer fence.
+        # Some chat models wrap JSON in markdown despite instructions.
         if raw.startswith("```"):
             raw = raw.strip("`")
             if raw.lower().startswith("json"):

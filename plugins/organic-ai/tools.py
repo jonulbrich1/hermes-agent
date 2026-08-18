@@ -26,11 +26,16 @@ _LOCK = threading.RLock()
 
 def _strict_organic_mode() -> bool:
     return os.environ.get("ORGANIC_HERMES_MODE", "0").strip().lower() in {
-        "1", "true", "yes", "on"
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
-def _runtime_api(method: str, path: str, payload: dict | None = None, timeout: float = 180.0):
+def _runtime_api(
+    method: str, path: str, payload: dict | None = None, timeout: float = 180.0
+):
     base = os.environ.get("ORGANIC_RUNTIME_URL", "http://127.0.0.1:8788").rstrip("/")
     url = base + (path if path.startswith("/") else "/" + path)
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -89,10 +94,20 @@ def _mvp_system():
         settings = replace(
             settings,
             backend="mvp",
-            mvp_data_dir=Path(os.environ.get("ORGANIC_MVP_DATA_DIR", organic_home / "mvp")),
-            trace_dir=Path(os.environ.get("ORGANIC_TRACE_DIR", organic_home / "traces")),
-            web_provider=os.environ.get("ORGANIC_WEB_PROVIDER", settings.web_provider).strip().lower(),
-            idle_growth_enabled=os.environ.get("ORGANIC_IDLE_GROWTH_ENABLED", "1").strip().lower()
+            mvp_data_dir=Path(
+                os.environ.get("ORGANIC_MVP_DATA_DIR", organic_home / "mvp")
+            ),
+            trace_dir=Path(
+                os.environ.get("ORGANIC_TRACE_DIR", organic_home / "traces")
+            ),
+            web_provider=os.environ
+            .get("ORGANIC_WEB_PROVIDER", settings.web_provider)
+            .strip()
+            .lower(),
+            idle_growth_enabled=os.environ
+            .get("ORGANIC_IDLE_GROWTH_ENABLED", "1")
+            .strip()
+            .lower()
             not in {"0", "false", "no", "off"},
         )
         try:
@@ -110,7 +125,15 @@ def _intent_envelope(text: str, *, research: bool = False):
     lower = text.lower()
     needs_current = research or any(
         phrase in lower
-        for phrase in ("latest", "current", "today", "right now", "newest", "search", "research")
+        for phrase in (
+            "latest",
+            "current",
+            "today",
+            "right now",
+            "newest",
+            "search",
+            "research",
+        )
     )
     return IntentEnvelope(
         original_request=text,
@@ -136,6 +159,80 @@ def _json(payload):
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+def _semantic_envelope(problem: str, structure) -> dict | None:
+    """Convert Hermes's untrusted structural translation into runtime input."""
+    if not isinstance(structure, dict):
+        return None
+    family = re.sub(r"[^a-z0-9]+", "_", str(structure.get("family") or "").lower()).strip("_")
+    goal = re.sub(r"[^a-z0-9]+", "_", str(structure.get("goal") or "").lower()).strip("_")
+    constraints = structure.get("constraints")
+    required_operations = structure.get("required_operations")
+    aliases = {
+        "linear_constraints": "symbolic_linear_constraints",
+        "linear_equations": "symbolic_linear_constraints",
+        "symbolic_linear_system": "symbolic_linear_constraints",
+    }
+    family = aliases.get(family, family)
+    goal = {
+        "solve_and_evaluate": "solve_linear_target",
+        "solve_linear_system_and_evaluate": "solve_linear_target",
+        "evaluate_linear_target": "solve_linear_target",
+        "topological_order": "linearize_order",
+        "prove_entailment": "prove_existential_relation",
+    }.get(goal, goal)
+    if not family or not goal:
+        raise ValueError("structure.family and structure.goal are required")
+    if not isinstance(constraints, list) or not constraints or len(constraints) > 64:
+        raise ValueError("structure.constraints must be a non-empty array")
+    if not all(isinstance(item, dict) and str(item.get("kind") or "").strip() for item in constraints):
+        raise ValueError("Every structural constraint must be an object with a kind")
+    forbidden = {"answer", "solution", "expected_result", "reward"}
+    if any(forbidden.intersection(str(key).lower() for key in item) for item in constraints):
+        raise ValueError("Structural constraints must contain premises, not proposed solutions")
+    if not isinstance(required_operations, list) or not required_operations:
+        raise ValueError("structure.required_operations must be a non-empty array")
+    operation_aliases = {
+        "CREATE_LINEAR_EQUATION": "CREATE_EQUATION",
+        "SOLVE_EQUATIONS": "SOLVE_LINEAR_SYSTEM",
+        "EVALUATE_TARGET": "EVALUATE_EXPRESSION",
+        "VALIDATE_SOLUTION": "VERIFY_SOLUTION",
+        "VERIFY_CONSTRAINTS": "CHECK_CONSTRAINTS",
+    }
+    operations = []
+    for value in required_operations[:24]:
+        normalized = re.sub(r"[^A-Z0-9]+", "_", str(value).upper()).strip("_")
+        normalized = operation_aliases.get(normalized, normalized)
+        if normalized and normalized not in operations:
+            operations.append(normalized)
+    if not operations:
+        raise ValueError("structure.required_operations must name at least one operation")
+    return {
+        "original_request": problem,
+        "normalized_request": " ".join(problem.split()),
+        "intent": "structural_reasoning",
+        "required_capabilities": [
+            family,
+            *[operation.lower() for operation in operations],
+        ],
+        "required_operations": operations,
+        "requested_output": "text",
+        "complexity": 0.7,
+        "uncertainty": 0.2,
+        "suggested_route": "organic_core",
+        "requires_current_external_info": False,
+        "self_contained_reasoning": True,
+        "closed_world": True,
+        "sufficient_premises": True,
+        "reasoning_family": family,
+        "reasoning_goal": goal,
+        "structural_constraints": constraints,
+        "reasons": [
+            "Hermes translated the current user premises into an untrusted structural task.",
+            "The Organic gate, processor, and verifier retain execution authority.",
+        ],
+    }
+
+
 def organic_get_state(args, **kwargs):
     try:
         state = _runtime_api("GET", "/api/state", timeout=5.0)
@@ -155,8 +252,8 @@ def organic_get_state(args, **kwargs):
             "status": "healthy",
             "mode": "hermes_plugin_integrated_mvp",
             "semantic_interface": {
-                "role": "Qwen/Hermes interface model is interpreter and tool operator, not Organic Core.",
-                "model": os.environ.get("ORGANIC_MODEL", "ollama:qwen3:0.6b"),
+                "role": "The configured Hermes model is interpreter and tool operator, not Organic Core.",
+                "model": os.environ.get("ORGANIC_MODEL", "inherit"),
             },
             "engine": engine_state,
             "memory_counts": engine_state.get("counts") or system.db.counts(),
@@ -200,7 +297,11 @@ def organic_reason(args, **kwargs):
     if not problem:
         return _json({"status": "INVALID_REQUEST", "error": "problem is required"})
     try:
-        response = _runtime_api("POST", "/api/message", {"text": problem})
+        semantic_envelope = _semantic_envelope(problem, args.get("structure"))
+        payload = {"text": problem}
+        if semantic_envelope is not None:
+            payload["semantic_envelope"] = semantic_envelope
+        response = _runtime_api("POST", "/api/message", payload)
         return _json({
             "status": "OK",
             "answer": response.get("answer"),
@@ -209,7 +310,9 @@ def organic_reason(args, **kwargs):
             "trace_id": response.get("trace_id"),
             "gate": response.get("gate"),
             "metadata": response.get("metadata") or {},
-            "context_items_supplied_by_interface": len(context) if isinstance(context, list) else 0,
+            "context_items_supplied_by_interface": len(context)
+            if isinstance(context, list)
+            else 0,
             "full_runtime_pipeline_used": True,
             "fallback_used": False,
         })
@@ -220,28 +323,40 @@ def organic_reason(args, **kwargs):
             ) from exc
     system = _mvp_system()
     if system is not None:
-        from organic_runtime.contracts import CoreRequest
+        from organic_runtime.contracts import CoreRequest, IntentEnvelope
 
-        envelope = _intent_envelope(problem)
+        supplied = _semantic_envelope(problem, args.get("structure"))
+        envelope = (
+            IntentEnvelope.model_validate(supplied)
+            if supplied is not None
+            else _intent_envelope(problem)
+        )
         preflight = system.preflight(envelope)
-        result = system.process_core(CoreRequest(envelope=envelope, preflight=preflight))
+        result = system.process_core(
+            CoreRequest(envelope=envelope, preflight=preflight)
+        )
         return _json({
             "status": "OK",
             "answer": result.answer,
             "activated_memory_ids": result.activated_memory_ids,
             "active_paths": result.active_paths,
             "metadata": result.metadata,
-            "context_items_supplied_by_interface": len(context) if isinstance(context, list) else 0,
+            "context_items_supplied_by_interface": len(context)
+            if isinstance(context, list)
+            else 0,
             "llm_fallback_used": False,
         })
 
     core = OrganicCoreAdapter(os.environ.get("ORGANIC_CORE_MODULE", "organic_core"))
     result = core.reason(problem, context)
-    _store().event("core_reason", {
-        "problem": problem,
-        "status": result.get("status"),
-        "llm_fallback_used": result.get("llm_fallback_used"),
-    })
+    _store().event(
+        "core_reason",
+        {
+            "problem": problem,
+            "status": result.get("status"),
+            "llm_fallback_used": result.get("llm_fallback_used"),
+        },
+    )
     return _json(result)
 
 
@@ -299,7 +414,9 @@ def organic_submit_evidence(args, **kwargs):
     source_kind = str(args.get("source_kind") or "OTHER").strip().upper()
 
     if not all([claim, quote, source_url, provenance_family]):
-        return _json({"error": "claim, quote, source_url and provenance_family are required"})
+        return _json({
+            "error": "claim, quote, source_url and provenance_family are required"
+        })
 
     eid = _store().add_evidence(
         claim=claim,
@@ -373,7 +490,9 @@ def organic_growth_frontier(args, **kwargs):
                     **dict(node),
                     "kind": str(node.get("kind") or "CONCEPT").upper(),
                     "degree": int(node.get("degree") or 0),
-                    "task_relevance": 1.0 if node.get("last_growth_at") is None else 0.2,
+                    "task_relevance": 1.0
+                    if node.get("last_growth_at") is None
+                    else 0.2,
                 }
                 for node in raw
             ],
@@ -440,10 +559,13 @@ def organic_growth_cycle(args, **kwargs):
         f"Resolve the knowledge gap around '{target.get('label')}' using independent "
         "evidence, then add only validated structure that connects to existing memory."
     )
-    _store().event("growth_task_proposed", {
-        "target": target,
-        "objective": objective,
-    })
+    _store().event(
+        "growth_task_proposed",
+        {
+            "target": target,
+            "objective": objective,
+        },
+    )
     return _json({
         "status": "GROWTH_TASK_PROPOSED",
         "growth_task_created": True,

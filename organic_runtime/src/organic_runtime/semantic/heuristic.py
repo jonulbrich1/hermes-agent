@@ -105,6 +105,7 @@ class HeuristicSemanticInterface:
                 sufficient_premises=bool(structural),
                 reasoning_family=structural.get("reasoning_family"),
                 reasoning_goal=structural.get("reasoning_goal"),
+                required_operations=structural.get("required_operations", []),
                 structural_constraints=structural.get("structural_constraints", []),
                 reasons=["All premises needed for the reasoning task are in the request."],
             )

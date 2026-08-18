@@ -33,7 +33,7 @@ DEFAULTS = {
     "user_display_name": "Jon",
     "semantic_agent_enabled": True,
     "semantic_endpoint": "http://127.0.0.1:8081/v1",
-    "semantic_model": "Qwen3-0.6B-GGUF",
+    "semantic_model": "auto",
     "semantic_timeout_seconds": 120,
     "semantic_temperature": 0.15,
     "semantic_tool_budget": 8,

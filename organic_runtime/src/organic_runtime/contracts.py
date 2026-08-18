@@ -106,6 +106,7 @@ class IntentEnvelope(BaseModel):
     sufficient_premises: bool = False
     reasoning_family: str | None = None
     reasoning_goal: str | None = None
+    required_operations: list[str] = Field(default_factory=list)
     structural_constraints: list[dict[str, Any]] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
 

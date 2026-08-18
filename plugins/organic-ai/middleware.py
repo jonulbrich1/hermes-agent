@@ -14,7 +14,9 @@ _LOCK = threading.RLock()
 _TURNS: dict[str, dict] = {}
 
 
-def _prune_turns(now: float, max_age_seconds: float = 3600.0, max_entries: int = 256) -> None:
+def _prune_turns(
+    now: float, max_age_seconds: float = 3600.0, max_entries: int = 256
+) -> None:
     for key, value in list(_TURNS.items()):
         if now - float(value.get("created_at") or now) > max_age_seconds:
             _TURNS.pop(key, None)
@@ -128,7 +130,9 @@ def _organic_handoff(user_text: str) -> dict:
 def on_llm_request(**kwargs):
     request = dict(kwargs["request"])
     turn = _turn_key(kwargs)
-    user_text = _explicit_user_text(kwargs.get("user_message")) or _latest_user_text(request)
+    user_text = _explicit_user_text(kwargs.get("user_message")) or _latest_user_text(
+        request
+    )
     rolling_context: dict = {}
     try:
         from .tools import _runtime_api
@@ -141,10 +145,13 @@ def on_llm_request(**kwargs):
         rolling_context = {}
 
     with _LOCK:
-        state = _TURNS.setdefault(turn, {
-            "organic_tool_used": False,
-            "created_at": time.time(),
-        })
+        state = _TURNS.setdefault(
+            turn,
+            {
+                "organic_tool_used": False,
+                "created_at": time.time(),
+            },
+        )
         _prune_turns(time.time())
 
         # A future memory preflight can be injected into state by an observer.
@@ -157,40 +164,33 @@ def on_llm_request(**kwargs):
         allowed = allowed_tools(decision.route)
         original_tools = list(request.get("tools") or [])
         filtered = [t for t in original_tools if _tool_name(t) in allowed]
-        organic_result = state.get("organic_result")
-        if decision.route != Route.CONVERSATION and not isinstance(organic_result, dict):
+        needs_organic = decision.route != Route.CONVERSATION
+        tool_already_used = bool(state.get("organic_tool_used"))
+        if needs_organic and not tool_already_used and not filtered:
+            # Compatibility fallback for hosts that loaded the middleware but did
+            # not expose the Organic toolset. Normal Hermes operation uses the
+            # active model and the typed tool schema instead.
             organic_result = _organic_handoff(user_text)
             state["organic_result"] = organic_result
             state["organic_tool_used"] = True
             state["last_organic_tool"] = "shared_runtime_handoff"
             state["last_organic_tool_at"] = time.time()
+            tool_already_used = True
 
-        # The presenter pass cannot directly invoke another tool. Any additional
-        # authorized loop is requested and executed inside the shared runtime.
-        request["tools"] = []
+        request["tools"] = filtered if needs_organic and not tool_already_used else []
         request.pop("tool_choice", None)
 
-        result_context = ""
-        if isinstance(organic_result, dict):
-            metadata = organic_result.get("metadata") or {}
-            result_context = json.dumps(
-                {
-                    "answer": organic_result.get("answer"),
-                    "route": organic_result.get("route"),
-                    "trace_id": organic_result.get("trace_id"),
-                    "completeness": metadata.get("semantic_interface_completeness"),
-                    "hard_blocked": metadata.get("hard_blocked"),
-                },
-                ensure_ascii=False,
-            )
+        result_context = json.dumps(
+            state.get("organic_result") or {}, ensure_ascii=False
+        )
 
         instruction = f"""
 You are the Semantic Interface Agent for Organic AI.
 
 Authorized route: {decision.route.value}
-Gate reasons: {'; '.join(decision.reasons)}
+Gate reasons: {"; ".join(decision.reasons)}
 Rolling Cognition: {json.dumps(rolling_context, ensure_ascii=False)[:4000]}
-Validated Organic result: {result_context or "not required for conversation"}
+Fallback Organic result: {result_context or "none"}
 
 You are a presenter and tool operator, not the logic core.
 
@@ -199,7 +199,9 @@ Hard rules:
 - Do not treat Rolling Cognition as trusted factual memory; use it only for active task and referent context.
 - Do not directly decide factual truth.
 - Do not write trusted memory.
-- For non-conversation turns, present only the supplied validated Organic result. Do not solve the request again or add a new conclusion.
+- For a non-conversation turn before an Organic tool has run, call the available Organic tool. For `organic_reason`, translate closed-world premises into its documented structure without calculating the answer yourself.
+- A structural translation is an untrusted proposal. Preserve the user's equations exactly; Organic owns solving, constraint checks, reward, and pathway promotion.
+- After an Organic tool result is present, present only that result. Do not solve the request again or add a new conclusion.
 - The shared runtime owns completeness checks and any additional authorized tool loop.
 - If the request depends on unresolved context, resolve the referent from conversation context or ask for clarification. Never web-search a meaningless literal query such as "why is it?".
 - Present grounded Organic results naturally after the required Organic tool path has executed.
@@ -212,7 +214,7 @@ Hard rules:
         "source": "organic-ai",
         "reason": (
             f"Interaction Gate route={decision.route.value}; "
-            f"shared_handoff={isinstance(organic_result, dict)}; "
+            f"organic_tool_used={tool_already_used}; "
             f"candidate_tools={len(filtered)}."
         ),
     }

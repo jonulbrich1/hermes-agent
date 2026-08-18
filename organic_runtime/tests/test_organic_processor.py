@@ -4,12 +4,12 @@ import json
 
 import pytest
 
-from organic_processor import OrganicProcessor, StructuralTask
+from organic_processor import PRIMITIVE_SPECS, OrganicProcessor, StructuralTask
+from organic_runtime.cognition import verify_trace
 from organic_runtime.config import RuntimeSettings
+from organic_runtime.contracts import IntentEnvelope
 from organic_runtime.factory import build_runtime
 from organic_runtime.semantic.pydantic_ai_adapter import PydanticAISemanticInterface
-from organic_runtime.contracts import IntentEnvelope
-from organic_runtime.cognition import verify_trace
 
 
 def _duck_task(before: int = 2, after: int = 2) -> StructuralTask:
@@ -34,6 +34,7 @@ def _partial_order_task() -> StructuralTask:
             {"kind": "precedes", "before": "D", "after": "E"},
             {"kind": "precedes", "before": "B", "after": "D"},
         ),
+        required_operations=("CREATE_RELATION", "TOPOLOGICAL_ORDER", "STOP_IF_VERIFIED"),
     )
 
 
@@ -42,8 +43,18 @@ def _unknown_boolean_task() -> StructuralTask:
         family="boolean_case_analysis",
         goal="prove_existential_relation",
         constraints=(
-            {"kind": "directed_relation", "subject": "Jack", "predicate": "looking_at", "object": "Anne"},
-            {"kind": "directed_relation", "subject": "Anne", "predicate": "looking_at", "object": "George"},
+            {
+                "kind": "directed_relation",
+                "subject": "Jack",
+                "predicate": "looking_at",
+                "object": "Anne",
+            },
+            {
+                "kind": "directed_relation",
+                "subject": "Anne",
+                "predicate": "looking_at",
+                "object": "George",
+            },
             {"kind": "entity_property", "entity": "Jack", "property": "married", "value": True},
             {"kind": "entity_property", "entity": "George", "property": "married", "value": False},
             {"kind": "entity_property", "entity": "Anne", "property": "married", "value": None},
@@ -55,6 +66,48 @@ def _unknown_boolean_task() -> StructuralTask:
                 "object_property": "married",
                 "object_value": False,
             },
+        ),
+        required_operations=(
+            "ENUMERATE_CASES",
+            "TEST_ENTAILMENT",
+            "VERIFY_ALL_CASES",
+            "STOP_IF_VERIFIED",
+        ),
+    )
+
+
+def _linear_task(prefix: str = "") -> StructuralTask:
+    head, body, tail = (f"{prefix}{name}" for name in ("head", "body", "tail"))
+    return StructuralTask(
+        family="symbolic_linear_constraints",
+        goal="solve_linear_target",
+        constraints=(
+            {"kind": "linear_equation", "coefficients": {head: 1}, "constant": 3},
+            {
+                "kind": "linear_equation",
+                "coefficients": {tail: 1, head: -1, body: -0.5},
+                "constant": 0,
+            },
+            {
+                "kind": "linear_equation",
+                "coefficients": {body: 1, head: -1, tail: -1},
+                "constant": 0,
+            },
+            {
+                "kind": "linear_target",
+                "coefficients": {head: 1, body: 1, tail: 1},
+                "constant": 0,
+                "label": "Total length",
+            },
+        ),
+        required_operations=(
+            "DEFINE_VARIABLE",
+            "CREATE_EQUATION",
+            "SUBSTITUTE",
+            "ISOLATE_VARIABLE",
+            "EVALUATE_EXPRESSION",
+            "VERIFY_SOLUTION",
+            "STOP_IF_VERIFIED",
         ),
     )
 
@@ -137,6 +190,88 @@ def test_capability_gap_discovers_verified_pathway_and_persists_it(tmp_path):
     assert restarted.status()["resolved_gap_count"] == 1
 
 
+def test_linear_capability_is_discovered_verified_and_transfers(tmp_path):
+    path = tmp_path / "processor.json"
+    processor = OrganicProcessor(path)
+    fish = _linear_task()
+
+    assert processor.process(fish, explore=True).alternatives == []
+    processor.register_gap(fish, "No learned symbolic linear pathway")
+    discovery = processor.discover(fish)
+    accepted = next(trace for trace in discovery.alternatives if verify_trace(fish, trace).accepted)
+    processor.learn(accepted, 1.0, "independent_test_verifier")
+    processor.promote_discovered(fish, accepted)
+
+    assert accepted.operators == list(fish.required_operations)
+    assert accepted.answer == {
+        "values": {"body": 12, "head": 3, "tail": 9},
+        "target": 24,
+    }
+    transferred = OrganicProcessor(path).process(_linear_task("crate_"))
+    assert transferred.answer["target"] == 24
+    assert "fish" not in json.dumps(OrganicProcessor(path).snapshot()).lower()
+
+
+def test_structural_verification_does_not_depend_on_a_family_label(tmp_path):
+    canonical = _linear_task()
+    unfamiliar = StructuralTask(
+        family="unfamiliar_domain_label",
+        goal=canonical.goal,
+        constraints=canonical.constraints,
+        required_operations=canonical.required_operations,
+    )
+
+    discovery = OrganicProcessor(tmp_path / "processor.json").discover(unfamiliar)
+
+    assert any(verify_trace(unfamiliar, trace).accepted for trace in discovery.alternatives)
+
+
+def test_unknown_generic_structure_becomes_durable_capability_gap(tmp_path):
+    processor = OrganicProcessor(tmp_path / "processor.json")
+    task = StructuralTask(
+        family="causal_rule_chain",
+        goal="derive_reachable_conclusion",
+        constraints=(
+            {"kind": "fact", "symbol": "A"},
+            {"kind": "implication", "if": "A", "then": "B"},
+            {"kind": "query", "symbol": "B"},
+        ),
+        required_operations=("CREATE_RELATION", "PROPAGATE_CONSTRAINT", "VERIFY_SOLUTION"),
+    )
+
+    result = processor.process(task, explore=True)
+    assert result.alternatives == []
+    key = processor.register_gap(task, result.capability_gap or "unknown structure")
+    discovery = processor.discover(task)
+    assert discovery.alternatives == []
+    processor.record_growth_failure(task, discovery.capability_gap or "missing primitives")
+
+    frontier = processor.snapshot()["growth_frontier"]
+    assert key in frontier
+    assert frontier[key]["task"]["required_operations"] == list(task.required_operations)
+    assert frontier[key]["status"] == "WAITING_FOR_PRIMITIVE"
+
+
+def test_seed_is_a_small_bounded_primitive_vocabulary_not_pathway_recipes():
+    names = [spec.name for spec in PRIMITIVE_SPECS]
+
+    assert 25 <= len(names) <= 40
+    assert len(names) == len(set(names))
+    assert {spec.category for spec in PRIMITIVE_SPECS} == {
+        "algebra",
+        "constraint",
+        "graph",
+        "logic",
+        "representation",
+        "search",
+        "verification",
+    }
+    assert all(spec.max_applications > 0 for spec in PRIMITIVE_SPECS)
+    assert all(spec.verifier_contract for spec in PRIMITIVE_SPECS)
+    assert all(isinstance(spec.requires, frozenset) for spec in PRIMITIVE_SPECS)
+    assert all(isinstance(spec.provides, frozenset) for spec in PRIMITIVE_SPECS)
+
+
 def test_unknown_value_is_enumerated_and_verified_in_every_case(tmp_path):
     processor = OrganicProcessor(tmp_path / "processor.json")
     task = _unknown_boolean_task()
@@ -211,7 +346,8 @@ async def test_runtime_transfers_order_structure_to_unseen_surface_nouns(tmp_pat
         )
         assert response.answer.startswith("5 cars")
         assert response.metadata["sources"] == []
-        assert response.metadata["processor_capabilities"] == ["order_cardinality"]
+        assert response.metadata["processor_capabilities"][0] == "order_cardinality"
+        assert "VERIFY_SOLUTION" in response.metadata["required_operations"]
     finally:
         runtime.close()
 
@@ -244,5 +380,91 @@ async def test_runtime_grows_pathways_for_ordering_and_unknown_case_analysis(tmp
         assert boolean.answer.startswith("Yes.")
         assert boolean.metadata["decision"]["result_code"] == "verified_boolean_entailment"
         assert runtime.core.system.processor.status()["learned_pathway_count"] == 2
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_accepts_untrusted_hermes_structural_envelope(tmp_path):
+    settings = RuntimeSettings(
+        backend="mvp",
+        semantic_mode="pydantic",
+        model="inherit",
+        mvp_data_dir=tmp_path / "mvp",
+        trace_dir=tmp_path / "traces",
+        idle_growth_enabled=False,
+        bootstrap_growth_enabled=False,
+    )
+    runtime = build_runtime(settings)
+    request = "A fish has related head, body, and tail lengths. What is its total length?"
+    task = _linear_task()
+    envelope = {
+        "original_request": request,
+        "normalized_request": request,
+        "intent": "structural_reasoning",
+        "required_capabilities": ["symbolic_linear_constraints"],
+        "suggested_route": "organic_core",
+        "self_contained_reasoning": True,
+        "closed_world": True,
+        "sufficient_premises": True,
+        "reasoning_family": task.family,
+        "reasoning_goal": task.goal,
+        "required_operations": list(task.required_operations),
+        "structural_constraints": list(task.constraints),
+    }
+    try:
+        response = await runtime.handle(request, semantic_envelope=envelope)
+        assert response.answer.startswith("Total length: 24")
+        assert response.metadata["processor_growth_attempted"] is True
+        assert (
+            response.metadata["decision"]["result_code"] == "verified_symbolic_linear_constraints"
+        )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_unknown_hermes_structure_for_future_growth(tmp_path):
+    settings = RuntimeSettings(
+        backend="mvp",
+        semantic_mode="heuristic",
+        model="inherit",
+        mvp_data_dir=tmp_path / "mvp",
+        trace_dir=tmp_path / "traces",
+        idle_growth_enabled=False,
+        bootstrap_growth_enabled=False,
+    )
+    runtime = build_runtime(settings)
+    request = "Given A implies B and A, determine whether B follows."
+    envelope = {
+        "original_request": request,
+        "normalized_request": request,
+        "intent": "structural_reasoning",
+        "suggested_route": "organic_core",
+        "self_contained_reasoning": True,
+        "closed_world": True,
+        "sufficient_premises": True,
+        "reasoning_family": "causal_rule_chain",
+        "reasoning_goal": "derive_reachable_conclusion",
+        "required_operations": [
+            "CREATE_RELATION",
+            "PROPAGATE_CONSTRAINT",
+            "VERIFY_SOLUTION",
+        ],
+        "structural_constraints": [
+            {"kind": "fact", "symbol": "A"},
+            {"kind": "implication", "if": "A", "then": "B"},
+            {"kind": "query", "symbol": "B"},
+        ],
+    }
+    try:
+        response = await runtime.handle(request, semantic_envelope=envelope)
+        frontier = runtime.core.system.processor.snapshot()["growth_frontier"]
+        assert response.metadata["hard_blocked"] is True
+        assert response.metadata["processor_growth_attempted"] is True
+        assert len(frontier) == 1
+        saved = next(iter(frontier.values()))
+        assert saved["task"]["required_operations"] == envelope["required_operations"]
+        assert saved["status"] == "WAITING_FOR_PRIMITIVE"
     finally:
         runtime.close()

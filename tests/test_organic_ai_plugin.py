@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import importlib.util
+import json
 import sys
 import tempfile
 
@@ -63,7 +64,10 @@ bad = [
     {"label": "according", "kind": None, "degree": 0, "mention_count": 197},
     {"label": "even though", "kind": None, "degree": 0, "mention_count": 14},
 ]
-T("Observed lexical-noise frontier is rejected", all(not guard.evaluate(x).accepted for x in bad))
+T(
+    "Observed lexical-noise frontier is rejected",
+    all(not guard.evaluate(x).accepted for x in bad),
+)
 T(
     "Connected promoted concept can become a growth target",
     guard.evaluate({"label": "tennis", "kind": "CONCEPT", "degree": 1}).accepted,
@@ -73,7 +77,10 @@ request = {
     "messages": [{"role": "user", "content": "What causes plate tectonics?"}],
     "tools": [
         {"type": "function", "function": {"name": "organic_reason", "parameters": {}}},
-        {"type": "function", "function": {"name": "organic_memory_search", "parameters": {}}},
+        {
+            "type": "function",
+            "function": {"name": "organic_memory_search", "parameters": {}},
+        },
         {"type": "function", "function": {"name": "terminal", "parameters": {}}},
         {"type": "function", "function": {"name": "web_search", "parameters": {}}},
     ],
@@ -95,12 +102,52 @@ def _fake_handoff(text):
 
 
 organic_middleware._organic_handoff = _fake_handoff
+organic_middleware._TURNS.clear()
 out = on_llm_request(request=request, turn_id="fork-test")["request"]
 names = {t["function"]["name"] for t in out.get("tools", [])}
-T("Factual route filters direct terminal/web tools", "terminal" not in names and "web_search" not in names)
-T("Factual first pass executes direct Organic handoff", handoff_requests == ["What causes plate tectonics?"])
-T("Hermes presenter pass exposes no bypass tools", names == set() and "tool_choice" not in out)
-T("Hermes presenter receives validated Organic result", "Validated Organic answer." in out["messages"][0]["content"])
+T(
+    "Factual route filters direct terminal/web tools",
+    "terminal" not in names and "web_search" not in names,
+)
+T(
+    "Hermes first pass uses its configured model with Organic tool",
+    names == {"organic_reason"},
+)
+T("Normal Hermes tool path does not start a side-model handoff", handoff_requests == [])
+T(
+    "Organic reason schema teaches structural translation",
+    "structure" in pkg.schemas.ORGANIC_REASON["parameters"]["properties"],
+)
+
+generic = pkg.tools._semantic_envelope(
+    "If A implies B and A is true, what follows?",
+    {
+        "family": "causal_rule_chain",
+        "goal": "derive_reachable_conclusion",
+        "required_operations": ["create relation", "propagate constraint", "verify solution"],
+        "constraints": [
+            {"kind": "fact", "symbol": "A"},
+            {"kind": "implication", "if": "A", "then": "B"},
+            {"kind": "query", "symbol": "B"},
+        ],
+    },
+)
+T(
+    "Organic tool accepts unknown domain-neutral structures for growth",
+    generic["reasoning_family"] == "causal_rule_chain"
+    and generic["required_operations"]
+    == ["CREATE_RELATION", "PROPAGATE_CONSTRAINT", "VERIFY_SOLUTION"],
+    json.dumps(generic),
+)
+
+organic_middleware.on_tool_execution(
+    tool_name="organic_reason",
+    turn_id="fork-test",
+    args={"problem": "What causes plate tectonics?"},
+    next_call=lambda args: "validated tool result",
+)
+presenter = on_llm_request(request=request, turn_id="fork-test")["request"]
+T("Hermes presenter pass exposes no bypass tools", presenter.get("tools") == [])
 
 provider_shaped = on_llm_request(
     request={"messages": [], "tools": request["tools"]},
@@ -109,8 +156,8 @@ provider_shaped = on_llm_request(
 )["request"]
 T(
     "Hermes original user turn drives Organic middleware",
-    handoff_requests[-1] == "What causes plate tectonics?"
-    and provider_shaped.get("tools") == [],
+    {t["function"]["name"] for t in provider_shaped.get("tools", [])}
+    == {"organic_reason"},
 )
 
 with tempfile.TemporaryDirectory() as td:

@@ -26,7 +26,9 @@ def build_runtime(settings: RuntimeSettings | None = None) -> OrganicRuntime:
         f"trace_dir={str(settings.trace_dir)!r}"
     )
 
-    if settings.semantic_mode == "heuristic":
+    if settings.semantic_mode == "heuristic" or settings.model.lower() == "inherit":
+        if settings.model.lower() == "inherit":
+            print("[factory] semantic model inherited from host tool calls; no side model started")
         semantic = HeuristicSemanticInterface()
     elif settings.semantic_mode == "pydantic":
         from organic_runtime.semantic.pydantic_ai_adapter import PydanticAISemanticInterface
@@ -69,11 +71,9 @@ def build_runtime(settings: RuntimeSettings | None = None) -> OrganicRuntime:
         core = EchoCoreAdapter()
         growth = MockGrowthAdapter()
     else:
-        raise ValueError("ORGANIC_BACKEND must be 'mvp' or 'mock'; got " f"{settings.backend!r}.")
+        raise ValueError(f"ORGANIC_BACKEND must be 'mvp' or 'mock'; got {settings.backend!r}.")
 
-    outcome_recorder = (
-        system.record_resource_plan_outcome if settings.backend == "mvp" else None
-    )
+    outcome_recorder = system.record_resource_plan_outcome if settings.backend == "mvp" else None
     return OrganicRuntime(
         semantic=semantic,
         memory=memory,

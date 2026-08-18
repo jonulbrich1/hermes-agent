@@ -54,7 +54,7 @@ Rules:
 """.strip()
 
 _JSON_CLASSIFIER_INSTRUCTIONS = """
-You are the Qwen Semantic Interface for Organic AI.
+You are the JSON Semantic Interface for Organic AI.
 
 Return only one JSON object. Do not use markdown. Do not include chain-of-thought.
 The JSON object must use these fields:
@@ -79,6 +79,8 @@ The JSON object must use these fields:
 - sufficient_premises: boolean
 - reasoning_family: string or null
 - reasoning_goal: string or null
+- required_operations: array of domain-neutral operation names. Describe what
+  processing is needed; never emit an executable pathway or a proposed answer.
 - structural_constraints: array of premise objects. Do not include an answer,
   expected result, solution, reward, or truth judgment in this array.
 - reasons: array of strings
@@ -123,6 +125,7 @@ current, or stable version and the result supplies that selected version, explic
 use the user's requested qualifier. Omit incomplete date fragments. Do not discuss
 the pipeline. Return plain text without chain-of-thought.
 """.strip()
+
 
 class PydanticAISemanticInterface:
     """PydanticAI-backed Semantic Interface.
@@ -216,7 +219,7 @@ class PydanticAISemanticInterface:
             result = await self._classifier.run(prompt)
             envelope = result.output
         except UnexpectedModelBehavior as exc:
-            print(f"[semantic] Typed Qwen envelope failed; requesting raw JSON envelope: {exc}")
+            print(f"[semantic] Typed envelope failed; requesting raw JSON envelope: {exc}")
             raw_prompt = (
                 f"User request: {request}\n\n"
                 f"Runtime state: {state.model_dump_json()}\n\n"
@@ -332,14 +335,15 @@ class PydanticAISemanticInterface:
         request_terms = set(re.findall(r"[a-z]+", request.lower()))
         asks_for_release_version = bool(
             {"release", "version"} & request_terms
-            and {"current", "latest", "newest", "recent", "stable"}
-            & request_terms
+            and {"current", "latest", "newest", "recent", "stable"} & request_terms
         )
         grounded_versions = {
             str(version) for version in (metadata.get("grounded_version_tokens") or [])
         }
-        if asks_for_release_version and grounded_versions and not (
-            candidate_numbers & grounded_versions
+        if (
+            asks_for_release_version
+            and grounded_versions
+            and not (candidate_numbers & grounded_versions)
         ):
             return original
         return candidate
@@ -378,7 +382,7 @@ class PydanticAISemanticInterface:
             complete=_coerce_bool(data.get("complete")),
             needs_tool_loop=_coerce_bool(data.get("needs_tool_loop")),
             missing=[str(item) for item in missing if str(item).strip()],
-            reason=str(data.get("reason") or "Qwen semantic coverage review."),
+            reason=str(data.get("reason") or "Semantic coverage review."),
         )
 
     async def _analyze_with_direct_qwen(
@@ -463,36 +467,40 @@ class PydanticAISemanticInterface:
         data.setdefault("sufficient_premises", False)
         data.setdefault("reasoning_family", None)
         data.setdefault("reasoning_goal", None)
+        data.setdefault("required_operations", [])
         data.setdefault("structural_constraints", [])
-        data.setdefault("reasons", ["Qwen raw JSON envelope parsed by runtime."])
+        data.setdefault("reasons", ["Raw JSON envelope parsed by runtime."])
 
-        for key in ("required_capabilities", "likely_memory_domains", "reasons"):
+        for key in (
+            "required_capabilities",
+            "required_operations",
+            "likely_memory_domains",
+            "reasons",
+        ):
             value = data.get(key)
             if isinstance(value, str):
                 data[key] = [value] if value.strip() else []
             elif not isinstance(value, list):
                 data[key] = []
         if isinstance(data.get("entities"), list):
-            data["entities"] = [
-                _normalize_entity_data(item)
-                for item in data["entities"]
-                if item
-            ]
+            data["entities"] = [_normalize_entity_data(item) for item in data["entities"] if item]
             data["entities"] = [item for item in data["entities"] if item is not None]
         else:
             data["entities"] = []
-        data["normalized_request"] = _clean_qwen_text(str(data.get("normalized_request") or request))
+        data["normalized_request"] = _clean_qwen_text(
+            str(data.get("normalized_request") or request)
+        )
         data["original_request"] = request
-        data["requested_output"] = _normalize_requested_output(str(data.get("requested_output") or "text"))
+        data["requested_output"] = _normalize_requested_output(
+            str(data.get("requested_output") or "text")
+        )
         data["intent"] = _normalize_intent(str(data.get("intent") or "general_reasoning"))
         data["complexity"] = _clamp01(data.get("complexity"), 0.5)
         data["uncertainty"] = _clamp01(data.get("uncertainty"), 0.5)
         data["requires_current_external_info"] = _coerce_bool(
             data.get("requires_current_external_info")
         )
-        data["self_contained_reasoning"] = _coerce_bool(
-            data.get("self_contained_reasoning")
-        )
+        data["self_contained_reasoning"] = _coerce_bool(data.get("self_contained_reasoning"))
         data["closed_world"] = _coerce_bool(data.get("closed_world"))
         data["sufficient_premises"] = _coerce_bool(data.get("sufficient_premises"))
         if not isinstance(data.get("structural_constraints"), list):
@@ -503,10 +511,17 @@ class PydanticAISemanticInterface:
             data["sufficient_premises"] = False
             data["reasoning_family"] = None
             data["reasoning_goal"] = None
+            data["required_operations"] = []
             data["structural_constraints"] = []
 
         route_value = str(data.get("suggested_route") or "organic_core")
-        if route_value not in {"conversation", "internal_state", "known_route", "organic_core", "growth"}:
+        if route_value not in {
+            "conversation",
+            "internal_state",
+            "known_route",
+            "organic_core",
+            "growth",
+        }:
             if data["intent"] == "simple_conversation":
                 route_value = "conversation"
             elif data["intent"] == "internal_state":
@@ -567,16 +582,17 @@ class PydanticAISemanticInterface:
             return IntentEnvelope.model_validate(data)
 
         intent_key = str(data.get("intent") or "").lower()
-        capabilities_text = " ".join(str(item) for item in data.get("required_capabilities") or []).lower()
+        capabilities_text = " ".join(
+            str(item) for item in data.get("required_capabilities") or []
+        ).lower()
         model_identified_reasoning = any(
             marker in intent_key or marker in capabilities_text
             for marker in ("logic", "puzzle", "arithmetic", "math_reason", "deduct")
         )
         structural = infer_structural_fields(request)
         if (
-            (structural or looks_self_contained_reasoning(request) or model_identified_reasoning)
-            and not data.get("requires_current_external_info")
-        ):
+            structural or looks_self_contained_reasoning(request) or model_identified_reasoning
+        ) and not data.get("requires_current_external_info"):
             capabilities = list(data.get("required_capabilities") or [])
             if "logical_reasoning" not in capabilities:
                 capabilities.append("logical_reasoning")
@@ -592,6 +608,7 @@ class PydanticAISemanticInterface:
                     "sufficient_premises": bool(structural),
                     "reasoning_family": None,
                     "reasoning_goal": None,
+                    "required_operations": [],
                     "structural_constraints": [],
                 }
             )
@@ -711,10 +728,10 @@ def _extract_json_object(raw: str) -> dict[str, Any]:
         text = re.sub(r"\s*```$", "", text).strip()
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if not match:
-        raise ValueError(f"Qwen did not return a JSON object: {raw[:500]}")
+        raise ValueError(f"Semantic model did not return a JSON object: {raw[:500]}")
     data = json.loads(match.group(0))
     if not isinstance(data, dict):
-        raise ValueError("Qwen JSON output was not an object.")
+        raise ValueError("Semantic model JSON output was not an object.")
     return data
 
 

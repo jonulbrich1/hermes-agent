@@ -125,7 +125,13 @@ class MvpOrganicSystem:
         self.settings = settings
         self.root = settings.mvp_data_dir.expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
-        for rel in ("data/logs", "data/source_cache", "data/core", "review_packages", "run_results"):
+        for rel in (
+            "data/logs",
+            "data/source_cache",
+            "data/core",
+            "review_packages",
+            "run_results",
+        ):
             (self.root / rel).mkdir(parents=True, exist_ok=True)
 
         self._closed = False
@@ -157,7 +163,9 @@ class MvpOrganicSystem:
             self.core = self.executive
             self.processor = OrganicProcessor(
                 self.root / "data" / "processor" / "processor_state.json",
-                max_state_bytes=min(int(self.config.get("max_core_bytes", 5 * 1024**3)), 16 * 1024**2),
+                max_state_bytes=min(
+                    int(self.config.get("max_core_bytes", 5 * 1024**3)), 16 * 1024**2
+                ),
             )
             self.legacy_processor = LegacyLogicSeedAdapter(
                 self.root / "runtime" / "legacy_seed" / "v0.2.1"
@@ -166,9 +174,7 @@ class MvpOrganicSystem:
             self.memory = MemoryCompiler(self.db, self.executive, self.logger, self.audit)
             project_root_value = os.getenv("ORGANIC_PROJECT_ROOT")
             project_root = (
-                Path(project_root_value).expanduser().resolve()
-                if project_root_value
-                else None
+                Path(project_root_value).expanduser().resolve() if project_root_value else None
             )
             self.review = ReviewExporter(
                 self.root,
@@ -320,9 +326,7 @@ class MvpOrganicSystem:
                 **metadata,
                 "route": plan.route.value,
                 "processor_capabilities": plan.processor_capabilities,
-                "prohibited_resources": [
-                    resource.value for resource in plan.prohibited_resources
-                ],
+                "prohibited_resources": [resource.value for resource in plan.prohibited_resources],
                 "planning_policy": plan.metadata.get("planning_policy"),
             },
         )
@@ -354,7 +358,9 @@ class MvpOrganicSystem:
         out_dir = self.root / "run_results"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"runtime_result_{stamp}_{trace_id}.json"
-        out.write_text(json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        out.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False, default=str), encoding="utf-8"
+        )
         self.audit.write("runtime_result_recorded", path=str(out), trace_id=trace_id)
         return str(out)
 
@@ -390,12 +396,16 @@ class MvpOrganicSystem:
         }
 
     def record_conversation_turn(self, request: str, response: Any) -> None:
-        payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response)
+        payload = (
+            response.model_dump(mode="json") if hasattr(response, "model_dump") else dict(response)
+        )
         metadata = {
             "request_id": payload.get("request_id"),
             "trace_id": payload.get("trace_id"),
             "route": payload.get("route"),
-            "semantic_suggested_route": (payload.get("metadata") or {}).get("semantic_suggested_route"),
+            "semantic_suggested_route": (payload.get("metadata") or {}).get(
+                "semantic_suggested_route"
+            ),
             "mvp_task_id": (payload.get("metadata") or {}).get("mvp_task_id"),
             "rolling_cognition": True,
         }
@@ -408,7 +418,9 @@ class MvpOrganicSystem:
             task_id,
             metadata,
         )
-        self._update_rolling_summary(request, str(payload.get("answer") or ""), str(payload.get("route") or ""))
+        self._update_rolling_summary(
+            request, str(payload.get("answer") or ""), str(payload.get("route") or "")
+        )
 
     def _update_rolling_summary(self, request: str, answer: str, route: str) -> None:
         previous_objective = self.db.get_meta("rolling_cognition_active_objective") or ""
@@ -448,7 +460,9 @@ class MvpOrganicSystem:
         task_id = "task:block:pydantic-bootstrap"
         if self.db.task(task_id):
             return
-        query = self.settings.bootstrap_growth_query or "organic ai cognition memory evidence growth"
+        query = (
+            self.settings.bootstrap_growth_query or "organic ai cognition memory evidence growth"
+        )
         self.db.create_task(
             task_id,
             "BLOCKING_GROWTH",
@@ -502,13 +516,10 @@ class MvpOrganicSystem:
         memory_ids = [str(e.get("claim_id")) for e in evidence if e.get("claim_id")]
         direct_answer = str(evidence[0].get("text")) if evidence and top >= 0.80 else None
         known_route = direct_answer is not None
-        requires_research = (
-            envelope.requires_current_external_info
-            or (
-                not evidence
-                and "coding" not in envelope.required_capabilities
-                and envelope.intent not in {"simple_conversation", "internal_state"}
-            )
+        requires_research = envelope.requires_current_external_info or (
+            not evidence
+            and "coding" not in envelope.required_capabilities
+            and envelope.intent not in {"simple_conversation", "internal_state"}
         )
         return PreflightKnowledge(
             known_route=known_route,
@@ -621,7 +632,8 @@ class MvpOrganicSystem:
         source_count = len(result.get("sources") or [])
         growth_evidence_count = len(growth_result.evidence) if growth_result else 0
         requires_grounding = bool(
-            request.envelope.intent not in {
+            request.envelope.intent
+            not in {
                 "simple_conversation",
                 "internal_state",
                 "clarification_needed",
@@ -768,18 +780,12 @@ class MvpOrganicSystem:
                     for relation in (item.get("relations") or [])
                     if not re.match(
                         r"^(?:\d|of\b|to\b|from\b|for\b|with\b|in\b|on\b|at\b|by\b)",
-                        norm_space(
-                            str(relation.get("subject_label") or "")
-                        ).lower(),
+                        norm_space(str(relation.get("subject_label") or "")).lower(),
                     )
                     and not re.match(
                         r"^(?:of\b|to\b|from\b|for\b|with\b|in\b|on\b|at\b|by\b)",
                         norm_space(
-                            str(
-                                relation.get("object_label")
-                                or relation.get("object_text")
-                                or ""
-                            )
+                            str(relation.get("object_label") or relation.get("object_text") or "")
                         ).lower(),
                     )
                     and (
@@ -830,7 +836,9 @@ class MvpOrganicSystem:
             selected_answer=selected_indexes,
             accepted=selected_pair is not None,
             result_code=(
-                selected_pair[1].result_code if selected_pair else "grounded_selection_capability_gap"
+                selected_pair[1].result_code
+                if selected_pair
+                else "grounded_selection_capability_gap"
             ),
             rewards=[
                 {
@@ -914,7 +922,9 @@ class MvpOrganicSystem:
         )
 
         structural_task = compile_structural_task(request.envelope)
-        active_weave = build_active_weave(request.envelope, structural_task) if structural_task else None
+        active_weave = (
+            build_active_weave(request.envelope, structural_task) if structural_task else None
+        )
         state_before = self.processor.snapshot()
         state_before_hash = hashlib.sha256(
             json.dumps(state_before, sort_keys=True).encode("utf-8")
@@ -977,7 +987,8 @@ class MvpOrganicSystem:
             else:
                 self.processor.record_growth_failure(
                     structural_task,
-                    "No discovered pathway passed deterministic external verification.",
+                    discovery.capability_gap
+                    or "No discovered pathway passed deterministic external verification.",
                 )
         cycles: list[dict[str, Any]] = []
         for index, (trace, verification) in enumerate(verified, start=1):
@@ -1000,7 +1011,7 @@ class MvpOrganicSystem:
 
         self.core_calls += 1
         answer_value = selected.answer if selected else None
-        if accepted and structural_task and structural_task.family == "order_cardinality":
+        if accepted and structural_task and structural_task.goal == "min_distinct_count":
             label_match = re.search(
                 r"\bhow many\s+([a-z][a-z-]*)",
                 request.envelope.original_request,
@@ -1011,10 +1022,26 @@ class MvpOrganicSystem:
                 f"{answer_value} {label}. The same objects can satisfy more than one relative-position "
                 "description, so the stated groups overlap in the smallest consistent arrangement."
             )
-        elif accepted and structural_task and structural_task.family == "partial_order":
+        elif accepted and structural_task and structural_task.goal == "linearize_order":
             answer = ", ".join(str(item) for item in (answer_value or []))
-        elif accepted and structural_task and structural_task.family == "boolean_case_analysis":
+        elif accepted and structural_task and structural_task.goal == "prove_existential_relation":
             answer = _format_boolean_entailment(structural_task, bool(answer_value))
+        elif (
+            accepted and structural_task and structural_task.goal == "solve_linear_target"
+        ):
+            result = answer_value if isinstance(answer_value, dict) else {}
+            values = result.get("values") if isinstance(result.get("values"), dict) else {}
+            target_constraint = next(
+                (
+                    item
+                    for item in structural_task.constraints
+                    if item.get("kind") == "linear_target"
+                ),
+                {},
+            )
+            label = str(target_constraint.get("label") or "Result").strip() or "Result"
+            assignments = ", ".join(f"{name} = {value}" for name, value in sorted(values.items()))
+            answer = f"{label}: {result.get('target')}. Verified values: {assignments}."
         elif accepted:
             answer = str(answer_value)
         else:
@@ -1038,7 +1065,9 @@ class MvpOrganicSystem:
                     selected_model_details["case_count"] = len(state["case_results"])
                     selected_model_details["all_cases_satisfied"] = bool(state.get("entailed"))
         validation_checks = (
-            dict(selected_verification.checks) if selected_verification else {"supported_family": False}
+            dict(selected_verification.checks)
+            if selected_verification
+            else {"supported_family": False}
         )
         decision = {
             "action": "ANSWER" if accepted else "ABSTAIN",
@@ -1052,7 +1081,9 @@ class MvpOrganicSystem:
             ),
         }
         reasoning_trace = {
-            "operator": "BOUNDED_STRUCTURAL_PATH" if accepted else "ORGANIC_PROCESSOR_CAPABILITY_GAP",
+            "operator": "BOUNDED_STRUCTURAL_PATH"
+            if accepted
+            else "ORGANIC_PROCESSOR_CAPABILITY_GAP",
             "pathway": selected.pathway if selected else None,
             "operators": selected_operators,
             "signature": structural_task.signature() if structural_task else None,
@@ -1168,13 +1199,18 @@ class MvpOrganicSystem:
                 "resource_plan_id": plan.plan_id,
                 "planner_world_mode": plan.world_mode.value,
                 "processor_capabilities": plan.processor_capabilities,
+                "required_operations": list(structural_task.required_operations)
+                if structural_task
+                else [],
                 "processor_operators": selected_operators,
                 "processor_cycles": len(cycles),
                 "processor_growth_attempted": processor_growth_attempted,
                 "processor_gap_key": processor_gap_key,
                 "processor_pathway_promoted": bool(processor_growth_attempted and accepted),
                 "confidence": 0.99 if accepted else 0.0,
-                "missing": [] if accepted else ["No verified processor pathway for the structural task."],
+                "missing": []
+                if accepted
+                else ["No verified processor pathway for the structural task."],
                 "sources": [],
                 "decision": decision,
                 "reasoning_trace": reasoning_trace,
@@ -1354,10 +1390,7 @@ class MvpOrganicSystem:
             answer=answer,
             activated_memory_ids=list(request.preflight.memory_ids),
             active_paths=[
-                *[
-                    f"ORGANIC_PROCESSOR:{name}"
-                    for name in result.get("processor_operators") or []
-                ],
+                *[f"ORGANIC_PROCESSOR:{name}" for name in result.get("processor_operators") or []],
                 str((result.get("reasoning_trace") or {}).get("operator") or "organic_executive"),
             ],
             metadata={
@@ -1402,14 +1435,18 @@ class MvpOrganicSystem:
         durable_ids: list[str] = []
         errors: list[str] = []
         try:
-            results = self.broker.search(query, limit=max(4, int(self.config.get("interaction_search_results", 4))))
+            results = self.broker.search(
+                query, limit=max(4, int(self.config.get("interaction_search_results", 4)))
+            )
             self.db.add_task_event(
                 task_id,
                 "SEARCH_RESULTS",
                 f"{len(results)} result(s)",
                 {"results": [r.__dict__ for r in results[:8]]},
             )
-            for search_result in results[: max(1, int(self.config.get("interaction_fetch_limit", 2)))]:
+            for search_result in results[
+                : max(1, int(self.config.get("interaction_fetch_limit", 2)))
+            ]:
                 try:
                     doc = self.broker.fetch_result(search_result)
                     ingest = self.memory.ingest(doc, reason=f"{task_id}: pydantic runtime growth")

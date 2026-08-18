@@ -57,20 +57,30 @@ Organic AI owns:
 - Growth Frontier
 - Rolling Cognition working context
 
-The Semantic Interface model is not allowed to silently answer factual or
-reasoning requests from pretrained knowledge. The Organic middleware performs a
-programmatic shared-runtime handoff before the Hermes presenter runs on every
-non-conversation route. The presenter receives no bypass tools on that pass.
-Qwen may present only a validated Organic result; deterministic guards reject
-new numbers, dropped grounded versions, and attempts to rejudge a verified
-closed-world result.
+The configured Hermes model is the Semantic Interface. It is not allowed to
+silently answer factual or reasoning requests from pretrained knowledge. The
+Organic middleware exposes only the gate-authorized Organic tool on the first
+non-conversation pass. For supported closed-world tasks, Hermes translates the
+user's premises into the typed `organic_reason` structure without solving them.
+The Organic runtime treats that structure as untrusted input, executes bounded
+operators, independently verifies the result, and then removes bypass tools for
+the presenter pass.
 
 Processor capability gaps are durable growth inputs. The processor records a
 bounded structural task on its capability frontier, searches approved operator
 compositions, submits every candidate to an independent verifier, and promotes
 only a verified pathway. Idle time retries pending processor growth before the
-Executive selects the next graph-growth task. Qwen can propose structure but
+Executive selects the next graph-growth task. The Hermes model can propose structure but
 cannot generate executable operators, assign rewards, or approve a pathway.
+
+The initial processor seed is a vocabulary of 35 typed, bounded cognitive
+primitives across representation, algebra, constraints, graphs, logic, search,
+and verification. It is deliberately not a catalog of solved task-family
+procedures. A model may name a required operation, but Organic will execute it
+only when a deterministic handler exists. Otherwise the task remains visible as
+`WAITING_FOR_PRIMITIVE`. Successful primitive compositions are independently
+verified and learned as reusable pathways: the seed supplies cognitive atoms;
+growth discovers the molecules.
 
 The detailed processor POC review, implemented architecture, live acceptance
 results, and remaining capability gaps are documented in
@@ -118,18 +128,11 @@ SETUP_ORGANIC_HERMES.bat
 
 This creates the Hermes environment, installs MCP support for the dashboard,
 ensures the embedded Organic runtime environment exists, enables the
-`organic-ai` plugin, and configures the shared Organic MCP server. Qwen still
-runs through Ollama as the Organic Semantic Interface. Hermes Chat uses a
-separate context-capable tool-calling model (`gemma4:e2b` by default) because
-Hermes requires at least a 64K context window:
-
-```bat
-ollama pull qwen3:0.6b
-ollama pull gemma4:e2b
-```
-
-Set `ORGANIC_HERMES_CHAT_MODEL` before launching to use another Hermes model.
-This does not change Qwen's role between the user request and the Organic Core.
+`organic-ai` plugin, and configures the shared Organic MCP server. Organic uses
+`ORGANIC_MODEL=inherit` by default, so setup does not install or select a second
+semantic model and does not replace Hermes's configured provider or model. An
+optional dedicated PydanticAI model can still be selected explicitly for
+standalone Organic use.
 
 Linux uses the equivalent scripts:
 

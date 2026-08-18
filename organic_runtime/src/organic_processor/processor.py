@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .operators import OPERATORS, OperatorError
+from .primitives import PRIMITIVE_SPECS
 from .types import ProcessResult, ProcessTrace, StructuralTask
 
 
@@ -43,30 +44,6 @@ INITIAL_EDGE_WEIGHTS = {
     "START->EVALUATE_BOUNDED_EXPRESSION": 0.80,
     "START->SELECT_GROUNDED_CANDIDATES": 0.80,
 }
-
-DISCOVERABLE_PATHWAYS: tuple[dict[str, Any], ...] = (
-    {
-        "name": "DISCOVER_PARTIAL_ORDER_LINEARIZATION",
-        "goal": "linearize_order",
-        "required_kinds": {"precedes"},
-        "operators": ["COLLECT_PARTIAL_ORDER", "TOPOLOGICAL_LINEARIZE", "EMIT_ORDER"],
-    },
-    {
-        "name": "DISCOVER_BOOLEAN_CASE_ENTAILMENT",
-        "goal": "prove_existential_relation",
-        "required_kinds": {
-            "directed_relation",
-            "entity_property",
-            "exists_relation_by_property",
-        },
-        "operators": [
-            "ENUMERATE_UNKNOWN_ASSIGNMENTS",
-            "EVALUATE_EXISTENTIAL_RELATION",
-            "EMIT_ENTAILMENT",
-        ],
-    },
-)
-
 
 class OrganicProcessor:
     """Bounded adaptive structural processor with no external-resource access."""
@@ -138,7 +115,9 @@ class OrganicProcessor:
         return edges
 
     def _path_score(self, operators: list[str]) -> float:
-        return sum(float(self.state["edge_weights"].get(edge, 0.0)) for edge in self._path_edges(operators))
+        return sum(
+            float(self.state["edge_weights"].get(edge, 0.0)) for edge in self._path_edges(operators)
+        )
 
     def available_pathways(self, task: StructuralTask) -> dict[str, list[str]]:
         expected_goal = {
@@ -146,17 +125,15 @@ class OrganicProcessor:
             "bounded_arithmetic": "evaluate_expression",
             "grounded_evidence_selection": "select_supported_items",
         }.get(task.family)
-        paths = (
-            dict(SEED_PATHWAYS.get(task.family, {}))
-            if expected_goal == task.goal
-            else {}
+        paths = dict(SEED_PATHWAYS.get(task.family, {})) if expected_goal == task.goal else {}
+        learned_store = self.state.get("learned_pathways", {})
+        learned = learned_store.get(task.capability_signature()) or learned_store.get(
+            task.legacy_capability_signature()
         )
-        learned = self.state.get("learned_pathways", {}).get(task.capability_signature())
         if isinstance(learned, dict) and learned.get("operators"):
-            paths[f"GROWN:{learned.get('name') or 'VERIFIED_PATHWAY'}"] = list(
-                learned["operators"]
-            )
-        composite = self.state.get("composites", {}).get(task.signature())
+            paths[f"GROWN:{learned.get('name') or 'VERIFIED_PATHWAY'}"] = list(learned["operators"])
+        composites = self.state.get("composites", {})
+        composite = composites.get(task.signature()) or composites.get(task.legacy_signature())
         if isinstance(composite, dict) and composite.get("operators"):
             paths[f"COMPOSITE:{composite['name']}"] = list(composite["operators"])
         return paths
@@ -175,11 +152,21 @@ class OrganicProcessor:
                     "expression_valid",
                     state.get(
                         "selection_valid",
-                        state.get("order_valid", state.get("entailment_valid")),
+                        state.get(
+                            "order_valid",
+                            state.get("entailment_valid", state.get("linear_constraints_valid")),
+                        ),
                     ),
                 ),
             )
-        except (KeyError, OperatorError, SyntaxError, ValueError, TypeError, ZeroDivisionError) as exc:
+        except (
+            KeyError,
+            OperatorError,
+            SyntaxError,
+            ValueError,
+            TypeError,
+            ZeroDivisionError,
+        ) as exc:
             trace.intermediate.append({"error": f"{type(exc).__name__}: {exc}"})
             trace.valid = False
         return trace
@@ -196,7 +183,9 @@ class OrganicProcessor:
             if explore:
                 return ProcessResult(
                     status="EXPLORED",
-                    alternatives=[self._execute(task, name, operators) for name, operators in ranked],
+                    alternatives=[
+                        self._execute(task, name, operators) for name, operators in ranked
+                    ],
                 )
             name, operators = ranked[0]
             trace = self._execute(task, name, operators)
@@ -248,25 +237,65 @@ class OrganicProcessor:
     def discover(self, task: StructuralTask, max_candidates: int = 8) -> ProcessResult:
         with self._lock:
             kinds = {str(item.get("kind") or "") for item in task.constraints}
-            candidates = [
-                template
-                for template in DISCOVERABLE_PATHWAYS
-                if template["goal"] == task.goal
-                and set(template["required_kinds"]).issubset(kinds)
-            ][: max(1, min(int(max_candidates), 8))]
+            requested = {
+                str(name).strip().upper() for name in task.required_operations if str(name).strip()
+            }
+            unavailable = sorted(requested - set(OPERATORS))
+            if unavailable:
+                return ProcessResult(
+                    status="CAPABILITY_GAP",
+                    capability_gap=(
+                        "WAITING_FOR_PRIMITIVE: no deterministic handler for "
+                        + ", ".join(unavailable)
+                    ),
+                )
+            primitives = [
+                spec
+                for spec in PRIMITIVE_SPECS
+                if spec.name in OPERATORS
+                and (not spec.goals or task.goal in spec.goals)
+                and spec.required_kinds.issubset(kinds)
+            ]
+            limit = max(1, min(int(max_candidates), 8))
+            candidates: list[list[str]] = []
+            frontier: list[tuple[list[str], frozenset[str]]] = [([], frozenset())]
+            visited: set[tuple[tuple[str, ...], frozenset[str]]] = set()
+            while frontier and len(candidates) < limit:
+                operators, available = frontier.pop(0)
+                if len(operators) >= 12:
+                    continue
+                for spec in primitives:
+                    name = spec.name
+                    if operators.count(name) >= spec.max_applications:
+                        continue
+                    if not spec.requires.issubset(available):
+                        continue
+                    provided = frozenset(set(available) | set(spec.provides))
+                    if provided == available:
+                        continue
+                    path = [*operators, name]
+                    if "answer" in provided and requested.issubset(path):
+                        candidates.append(path)
+                        if len(candidates) >= limit:
+                            break
+                        continue
+                    marker = (tuple(path), provided)
+                    if marker not in visited:
+                        visited.add(marker)
+                        frontier.append((path, provided))
             if not candidates:
                 return ProcessResult(
                     status="CAPABILITY_GAP",
                     capability_gap=(
-                        "No approved operator composition matches "
+                        "No bounded primitive composition satisfies "
                         f"{task.capability_signature()}"
                     ),
                 )
             return ProcessResult(
                 status="EXPLORED",
                 alternatives=[
-                    self._execute(task, str(item["name"]), list(item["operators"]))
-                    for item in candidates
+                    self._execute(task, "DISCOVERED:" + ">".join(operators), operators)
+                    for operators in candidates
                 ],
             )
 
@@ -325,11 +354,16 @@ class OrganicProcessor:
                 },
             )
             attempts = int(entry.get("attempts", 0)) + 1
+            waiting_for_primitive = "WAITING_FOR_PRIMITIVE" in str(reason).upper()
             entry.update(
                 {
                     "attempts": attempts,
                     "last_attempt": now,
-                    "status": "WAITING_FOR_PRIMITIVE" if attempts >= 2 else "PENDING",
+                    "status": (
+                        "WAITING_FOR_PRIMITIVE"
+                        if waiting_for_primitive or attempts >= 2
+                        else "PENDING"
+                    ),
                     "last_error": str(reason or "No candidate passed external verification")[:500],
                 }
             )
@@ -362,10 +396,14 @@ class OrganicProcessor:
             weights = self.state["edge_weights"]
             for edge in self._path_edges(trace.operators):
                 current = float(weights.get(edge, 0.0))
-                weights[edge] = round(max(-2.0, min(3.0, current + self.learning_rate * bounded_reward)), 6)
+                weights[edge] = round(
+                    max(-2.0, min(3.0, current + self.learning_rate * bounded_reward)), 6
+                )
             counts_key = "success_counts" if bounded_reward > 0 else "failure_counts"
             if bounded_reward != 0:
-                self.state[counts_key][trace.signature] = int(self.state[counts_key].get(trace.signature, 0)) + 1
+                self.state[counts_key][trace.signature] = (
+                    int(self.state[counts_key].get(trace.signature, 0)) + 1
+                )
             source = str(feedback_source or "external")[:64]
             sources = self.state["feedback_source_counts"]
             sources[source] = int(sources.get(source, 0)) + 1
@@ -421,6 +459,16 @@ class OrganicProcessor:
                 "growth_event_count": int(self.state.get("growth_event_count", 0)),
                 "last_growth_result": copy.deepcopy(self.state.get("last_growth_result")),
                 "supported_families": sorted(set(SEED_PATHWAYS) | learned_families),
-                "discoverable_operator_compositions": len(DISCOVERABLE_PATHWAYS),
+                "seed_primitive_count": len(PRIMITIVE_SPECS),
+                "executable_primitive_count": sum(
+                    1 for spec in PRIMITIVE_SPECS if spec.name in OPERATORS
+                ),
+                "waiting_primitive_count": sum(
+                    1 for spec in PRIMITIVE_SPECS if spec.name not in OPERATORS
+                ),
+                # Kept for callers of the earlier status contract.
+                "discoverable_primitives": sum(
+                    1 for spec in PRIMITIVE_SPECS if spec.name in OPERATORS
+                ),
                 "external_resource_access": False,
             }

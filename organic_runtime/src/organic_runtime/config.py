@@ -41,7 +41,7 @@ def _hermes_project_root() -> Path | None:
 class RuntimeSettings:
     semantic_mode: str = "heuristic"
     backend: str = "mvp"
-    model: str = "ollama:qwen3:0.6b"
+    model: str = "inherit"
     ollama_base_url: str | None = None
     trace_dir: Path = Path("runtime_data/traces")
     mvp_data_dir: Path = Path("runtime_data/mvp")
@@ -74,7 +74,7 @@ class RuntimeSettings:
         return cls(
             semantic_mode=os.getenv("ORGANIC_SEMANTIC_MODE", "heuristic").strip().lower(),
             backend=os.getenv("ORGANIC_BACKEND", "mvp").strip().lower(),
-            model=os.getenv("ORGANIC_MODEL", "ollama:qwen3:0.6b").strip(),
+            model=os.getenv("ORGANIC_MODEL", "inherit").strip(),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL"),
             trace_dir=Path(os.getenv("ORGANIC_TRACE_DIR", str(default_trace_dir))),
             mvp_data_dir=Path(os.getenv("ORGANIC_MVP_DATA_DIR", str(default_mvp_dir))),
@@ -87,7 +87,9 @@ class RuntimeSettings:
             idle_growth_enabled=os.getenv("ORGANIC_IDLE_GROWTH_ENABLED", "1").strip().lower()
             not in {"0", "false", "no", "off"},
             idle_delay_seconds=_int_env("ORGANIC_IDLE_DELAY_SECONDS", 2),
-            bootstrap_growth_enabled=os.getenv("ORGANIC_BOOTSTRAP_GROWTH_ENABLED", "1").strip().lower()
+            bootstrap_growth_enabled=os.getenv("ORGANIC_BOOTSTRAP_GROWTH_ENABLED", "1")
+            .strip()
+            .lower()
             not in {"0", "false", "no", "off"},
             bootstrap_growth_query=os.getenv(
                 "ORGANIC_BOOTSTRAP_GROWTH_QUERY",

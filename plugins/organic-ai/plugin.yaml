@@ -29,8 +29,8 @@ config_schema:
     description: Integrated MVP runtime data directory. Defaults to ORGANIC_HOME/mvp.
   semantic_model:
     type: str
-    default: "ollama:qwen3:0.6b"
-    description: Small Semantic Interface model used outside Hermes-native model configuration.
+    default: "inherit"
+    description: Use inherit for Hermes-native tool translation, or select an optional dedicated semantic model.
   core_module:
     type: str
     default: "organic_core"
