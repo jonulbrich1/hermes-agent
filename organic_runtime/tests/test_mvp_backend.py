@@ -234,10 +234,19 @@ def test_empty_growth_uses_entity_query_and_suppresses_immediate_retry(tmp_path,
         _close(runtime)
 
 
-def test_memory_compiler_honors_idle_sentence_budget(tmp_path):
+def test_memory_compiler_honors_idle_sentence_budget(tmp_path, monkeypatch):
     runtime = build_runtime(_settings(tmp_path))
     try:
         system = runtime.growth.system
+        batch_calls = 0
+        original_add_lexical_anchors = system.db.add_lexical_anchors
+
+        def track_batch(anchors):
+            nonlocal batch_calls
+            batch_calls += 1
+            return original_add_lexical_anchors(anchors)
+
+        monkeypatch.setattr(system.db, "add_lexical_anchors", track_batch)
         source_id = "source:bounded-idle-test"
         system.db.add_source(
             source_id,
@@ -266,6 +275,35 @@ def test_memory_compiler_honors_idle_sentence_budget(tmp_path):
 
         assert result.sentences == 5
         assert result.claims_added == 5
+        assert batch_calls == 1
+    finally:
+        _close(runtime)
+
+
+def test_interaction_status_does_not_hide_active_growth_task(tmp_path):
+    runtime = build_runtime(_settings(tmp_path))
+    try:
+        engine = runtime.growth.system.engine
+        engine.set_idle_growth(False)
+        engine._set_current("task:idle:status-test")
+
+        interaction_id = engine.begin_interaction_task(
+            "What is 2 + 2?",
+            "What is 2 + 2?",
+            "organic_core",
+            {},
+            {},
+        )
+        active = engine.state()
+        assert active["current_task_id"] == interaction_id
+        assert active["current_interaction_task_id"] == interaction_id
+        assert active["current_growth_task_id"] == "task:idle:status-test"
+
+        engine.complete_interaction_task(interaction_id, "4", True)
+        resumed = engine.state()
+        assert resumed["current_task_id"] == "task:idle:status-test"
+        assert resumed["current_interaction_task_id"] is None
+        assert resumed["current_growth_task_id"] == "task:idle:status-test"
     finally:
         _close(runtime)
 

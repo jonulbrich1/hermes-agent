@@ -260,6 +260,7 @@ class MemoryCompiler:
             for c in {normalize_label(x) for x in cs}:
                 freq[c] += 1
 
+        lexical_anchors: list[tuple[str, str | None, str, str]] = []
         for idx, sent in enumerate(sentences):
             claim_id = self._claim_id(doc.source_id, idx, sent)
             before = self.db.one('SELECT 1 FROM claims WHERE claim_id=?', (claim_id,))
@@ -276,7 +277,7 @@ class MemoryCompiler:
                 durable = freq[norm] >= 2
                 try:
                     if not durable:
-                        self.db.add_lexical_anchor(claim_id, doc.source_id, surface, norm)
+                        lexical_anchors.append((claim_id, doc.source_id, surface, norm))
                         continue
                     cid = self._ensure_concept(surface, doc.source_id, confidence=min(0.78, 0.42 + freq[norm]*0.06), durable=True)
                     exists = self.db.one('SELECT 1 FROM mentions WHERE claim_id=? AND concept_id=?', (claim_id, cid))
@@ -288,6 +289,8 @@ class MemoryCompiler:
 
             for p in self._reference_relations(sent):
                 self._commit_relation(p, claim_id, doc, result)
+
+        self.db.add_lexical_anchors(lexical_anchors)
 
         # Optional Processing Core proposals never bypass programmatic evidence validation.
         proposals = self.core.extract_proposals(processed_text, doc.title)

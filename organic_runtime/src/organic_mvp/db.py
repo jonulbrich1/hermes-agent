@@ -340,6 +340,18 @@ class MemoryDB:
         self.execute('INSERT OR IGNORE INTO lexical_anchors(claim_id,source_id,surface,normalized,created_at) VALUES(?,?,?,?,?)',
                      (claim_id, source_id, surface, normalized, utcnow()))
 
+    def add_lexical_anchors(self, anchors: Iterable[tuple[str, str | None, str, str]]) -> None:
+        rows = [(claim_id, source_id, surface, normalized, utcnow())
+                for claim_id, source_id, surface, normalized in anchors]
+        if not rows:
+            return
+        with self._lock:
+            self.conn.executemany(
+                'INSERT OR IGNORE INTO lexical_anchors(claim_id,source_id,surface,normalized,created_at) VALUES(?,?,?,?,?)',
+                rows,
+            )
+            self.conn.commit()
+
     def add_mention(self, claim_id: str, concept_id: str, surface: str, start_char: int | None = None, end_char: int | None = None):
         self.execute('INSERT INTO mentions(claim_id,concept_id,surface,start_char,end_char) VALUES(?,?,?,?,?)',
                      (claim_id, concept_id, surface, start_char, end_char))

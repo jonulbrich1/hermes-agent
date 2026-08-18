@@ -39,6 +39,7 @@ class OrganicEngine:
         self._thread: Optional[threading.Thread] = None
         self._state_lock = threading.RLock()
         self._current_task_id: Optional[str] = None
+        self._interaction_task_id: Optional[str] = None
         self._manual_growth_budget = 0
         self._completed_idle_cycles = 0
         self._completed_processor_growth_cycles = 0
@@ -183,7 +184,8 @@ class OrganicEngine:
         self.db.update_task(tid, started_at=utcnow(), attempts=1)
         self.db.add_task_event(tid, 'EXECUTIVE_ACCEPTED', normalized_goal, {'route': route, 'gate': gate})
         self.audit.write('executive_interaction_task_started', task_id=tid, route=route, goal=normalized_goal)
-        self._set_current(tid)
+        with self._state_lock:
+            self._interaction_task_id = tid
         return tid
 
     def record_interaction_stage(self, task_id: str | None, stage: str, message: str = '',
@@ -203,8 +205,8 @@ class OrganicEngine:
         self.audit.write('executive_interaction_task_completed', task_id=task_id, status=status,
                          result_preview=result[:500])
         with self._state_lock:
-            if self._current_task_id == task_id:
-                self._current_task_id = None
+            if self._interaction_task_id == task_id:
+                self._interaction_task_id = None
 
     def request_growth_cycles(self, cycles: int) -> None:
         cycles = max(0, min(int(cycles), 1000))
@@ -215,7 +217,9 @@ class OrganicEngine:
 
     def state(self) -> dict:
         with self._state_lock:
-            current = self._current_task_id
+            growth_task = self._current_task_id
+            interaction_task = self._interaction_task_id
+            current = interaction_task or growth_task
             budget = self._manual_growth_budget
             idle_count = self._completed_idle_cycles
             processor_idle_count = self._completed_processor_growth_cycles
@@ -223,6 +227,8 @@ class OrganicEngine:
         return {
             'running': bool(self._thread and self._thread.is_alive()),
             'current_task_id': current,
+            'current_growth_task_id': growth_task,
+            'current_interaction_task_id': interaction_task,
             'idle_growth_enabled': bool(self.config.get('idle_growth_enabled', False)),
             'manual_growth_budget': budget,
             'completed_idle_cycles': idle_count,
