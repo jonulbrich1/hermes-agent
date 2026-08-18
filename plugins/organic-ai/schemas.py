@@ -47,7 +47,8 @@ ORGANIC_REASON = {
                         "description": (
                             "A concise structural family hint, not a domain noun or answer. "
                             "Examples: symbolic_linear_constraints, partial_order, "
-                            "boolean_case_analysis. Unknown families are allowed."
+                            "boolean_case_analysis, truth_role_assignment. Unknown families "
+                            "are allowed."
                         ),
                     },
                     "goal": {
@@ -55,7 +56,7 @@ ORGANIC_REASON = {
                         "description": (
                             "Canonical structural objective such as solve_linear_target, "
                             "linearize_order, prove_existential_relation, compare_values, "
-                            "or search_path."
+                            "identify_role_assignment, or search_path."
                         ),
                     },
                     "required_operations": {
@@ -87,7 +88,10 @@ ORGANIC_REASON = {
                             "Typed premises only; never include a proposed answer. Preserve "
                             "relations and unknowns explicitly. For linear equations, use "
                             "kind=linear_equation with numeric coefficients on the left and "
-                            "constant on the right; use one kind=linear_target for the goal."
+                            "constant on the right; use one kind=linear_target for the goal. "
+                            "For truth-role puzzles, use one kind=assignment_domain, one "
+                            "kind=role_truth_policy per role, and one kind=role_statement per "
+                            "speaker assertion."
                         ),
                         "items": {
                             "type": "object",

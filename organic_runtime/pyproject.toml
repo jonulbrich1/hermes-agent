@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "organic-ai-runtime"
-version = "0.11.0rc2"
+version = "0.11.0rc3"
 description = "Organic AI runtime overlay integrated into the Hermes fork scaffold"
 requires-python = ">=3.10"
 dependencies = [

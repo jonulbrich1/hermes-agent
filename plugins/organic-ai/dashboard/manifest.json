@@ -3,7 +3,7 @@
   "label": "Organic",
   "description": "Organic AI runtime, growth, memory, MCP, and review controls.",
   "icon": "Activity",
-  "version": "0.5.1",
+  "version": "0.5.3",
   "tab": { "path": "/organic", "position": "after:chat" },
   "entry": "dist/index.js",
   "css": "dist/style.css",

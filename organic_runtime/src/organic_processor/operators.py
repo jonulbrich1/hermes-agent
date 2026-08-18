@@ -323,15 +323,127 @@ def _evaluate_truth_lie_questions(state: dict[str, Any]) -> dict[str, Any]:
     return {**state, "case_results": [], "entailed": False, "entailment_valid": True}
 
 
+def _truth_role_components(
+    task: StructuralTask,
+) -> tuple[list[str], list[str], dict[str, bool | None], list[dict[str, str]]]:
+    domains = [item for item in task.constraints if item.get("kind") == "assignment_domain"]
+    if len(domains) != 1 or domains[0].get("bijection") is not True:
+        raise OperatorError("Role assignment requires one bijective assignment domain")
+    entities = [str(item).strip() for item in (domains[0].get("entities") or [])]
+    roles = [str(item).strip().lower() for item in (domains[0].get("roles") or [])]
+    if (
+        not 2 <= len(entities) <= 8
+        or len(entities) != len(roles)
+        or len(set(entities)) != len(entities)
+        or len(set(roles)) != len(roles)
+        or not all(entities)
+        or not all(roles)
+    ):
+        raise OperatorError("Role assignment domain must contain 2-8 unique entities and roles")
+
+    policies: dict[str, bool | None] = {}
+    statements: list[dict[str, str]] = []
+    for constraint in task.constraints:
+        kind = constraint.get("kind")
+        if kind == "assignment_domain":
+            continue
+        if kind == "role_truth_policy":
+            role = str(constraint.get("role") or "").strip().lower()
+            truthful = constraint.get("truthful")
+            if role not in roles or truthful not in {True, False, None} or role in policies:
+                raise OperatorError("Invalid or duplicate role truth policy")
+            policies[role] = truthful
+            continue
+        if kind == "role_statement":
+            statement = {
+                "speaker": str(constraint.get("speaker") or "").strip(),
+                "subject": str(constraint.get("subject") or "").strip(),
+                "role": str(constraint.get("role") or "").strip().lower(),
+            }
+            if (
+                statement["speaker"] not in entities
+                or statement["subject"] not in entities
+                or statement["role"] not in roles
+            ):
+                raise OperatorError("Role statement references an unknown entity or role")
+            statements.append(statement)
+            continue
+        raise OperatorError("Unsupported truth-role assignment constraint")
+    if set(policies) != set(roles) or not statements:
+        raise OperatorError("Every role needs a truth policy and at least one statement")
+    return entities, roles, policies, statements
+
+
+def _enumerate_truth_role_assignments(
+    state: dict[str, Any], task: StructuralTask
+) -> dict[str, Any]:
+    entities, roles, policies, statements = _truth_role_components(task)
+    assignments = [
+        dict(zip(entities, permutation)) for permutation in itertools.permutations(roles)
+    ]
+    return {
+        **state,
+        "assignments": assignments,
+        "relations": statements,
+        "query": {"goal": "identify_role_assignment"},
+        "role_truth_policies": policies,
+    }
+
+
+def _evaluate_truth_role_assignments(state: dict[str, Any]) -> dict[str, Any]:
+    policies = state.get("role_truth_policies") or {}
+    statements = state.get("relations") or []
+    case_results: list[dict[str, Any]] = []
+    valid_assignments: list[dict[str, str]] = []
+    for assignment in state.get("assignments") or []:
+        statement_results: list[dict[str, Any]] = []
+        valid = True
+        for statement in statements:
+            speaker_role = assignment.get(statement.get("speaker"))
+            truth_policy = policies.get(speaker_role)
+            proposition_true = assignment.get(statement.get("subject")) == statement.get("role")
+            statement_valid = truth_policy is None or proposition_true is truth_policy
+            valid = valid and statement_valid
+            statement_results.append(
+                {
+                    "speaker": statement.get("speaker"),
+                    "proposition_true": proposition_true,
+                    "truth_policy": truth_policy,
+                    "satisfied": statement_valid,
+                }
+            )
+        case_results.append(
+            {
+                "assignment": dict(assignment),
+                "statement_results": statement_results,
+                "satisfied": valid,
+            }
+        )
+        if valid:
+            valid_assignments.append(dict(assignment))
+    return {
+        **state,
+        "case_results": case_results,
+        "valid_assignments": valid_assignments,
+        "role_assignment": valid_assignments[0] if len(valid_assignments) == 1 else None,
+        "entailed": len(valid_assignments) == 1,
+        "entailment_valid": True,
+    }
+
+
 def enumerate_cases(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
     if task.goal == "identify_truth_road":
         return _enumerate_truth_lie_cases(state, task)
+    if task.goal == "identify_role_assignment":
+        return _enumerate_truth_role_assignments(state, task)
     return enumerate_unknown_assignments(state, task)
 
 
 def test_entailment(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
     if task.goal == "identify_truth_road":
         return _evaluate_truth_lie_questions(state)
+    if task.goal == "identify_role_assignment":
+        return _evaluate_truth_role_assignments(state)
     return evaluate_existential_relation(state, task)
 
 
@@ -341,6 +453,10 @@ def verify_all_cases(state: dict[str, Any], task: StructuralTask) -> dict[str, A
         raise OperatorError("Case verification requires evaluated bounded cases")
     if task.goal == "identify_truth_road" and not state.get("entailed"):
         raise OperatorError("No question identifies the target road in every responder case")
+    if task.goal == "identify_role_assignment":
+        valid_assignments = state.get("valid_assignments") or []
+        if len(valid_assignments) != 1:
+            raise OperatorError("Role premises do not determine exactly one assignment")
     return {**state, "verified": True, "entailment_valid": True}
 
 
@@ -357,6 +473,8 @@ def stop_if_verified(state: dict[str, Any], task: StructuralTask) -> dict[str, A
         answer = list(state["ordered"])
     elif isinstance(state.get("question"), dict):
         answer = dict(state["question"])
+    elif isinstance(state.get("role_assignment"), dict):
+        answer = dict(state["role_assignment"])
     elif "entailed" in state:
         answer = bool(state["entailed"])
     else:

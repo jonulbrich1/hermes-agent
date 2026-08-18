@@ -7,8 +7,9 @@ tools array by three bridge tools — ``tool_search``, ``tool_describe``,
 Design constraints this module is built around (see ``openclaw-tool-search-report``
 for the full rationale):
 
-* Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` are *never* deferred.
-  Always-load means always-load. No exceptions.
+* Core tools defined in ``toolsets._HERMES_CORE_TOOLS`` and explicitly
+  request-controlling plugin tools are *never* deferred. Always-load means
+  always-load. No exceptions.
 * Tiered disclosure (July 2026 plan): the moment ANY deferrable (MCP/plugin)
   tools are present, they hide behind the bridge. What scales with catalog
   size is the *listing*, not the activation decision:
@@ -188,15 +189,16 @@ def load_config() -> ToolSearchConfig:
 # ---------------------------------------------------------------------------
 
 
-def _core_tool_names() -> frozenset[str]:
+def _always_visible_tool_names() -> frozenset[str]:
     """Return the set of tool names that must NEVER be deferred.
 
     Imported lazily because ``toolsets`` imports from ``tools.registry``
     and we don't want a hard cycle.
     """
     try:
-        from toolsets import _HERMES_CORE_TOOLS
-        return frozenset(_HERMES_CORE_TOOLS)
+        from toolsets import _ALWAYS_VISIBLE_PLUGIN_TOOLS, _HERMES_CORE_TOOLS
+
+        return frozenset(_HERMES_CORE_TOOLS) | _ALWAYS_VISIBLE_PLUGIN_TOOLS
     except Exception:
         return frozenset()
 
@@ -204,14 +206,14 @@ def _core_tool_names() -> frozenset[str]:
 def is_deferrable_tool_name(name: str) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
-    A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
-    even when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    A tool is deferrable iff it is registered with an MCP toolset prefix OR it
+    is not in the always-visible set. Core tools and explicitly listed
+    request-controlling plugin tools are never deferred even when their
+    toolset is plugin-provided.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
-    if name in _core_tool_names():
+    if name in _always_visible_tool_names():
         return False
     # Check registry toolset for MCP prefix.
     try:

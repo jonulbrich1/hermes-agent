@@ -161,6 +161,20 @@ def _json(payload):
 
 def _semantic_envelope(problem: str, structure) -> dict | None:
     """Convert Hermes's untrusted structural translation into runtime input."""
+    try:
+        _ensure_runtime_path()
+        from organic_runtime.cognition.structural import infer_structural_fields
+
+        inferred = infer_structural_fields(problem)
+    except (ImportError, TypeError, ValueError):
+        inferred = None
+    if inferred is not None:
+        structure = {
+            "family": inferred["reasoning_family"],
+            "goal": inferred["reasoning_goal"],
+            "required_operations": inferred["required_operations"],
+            "constraints": inferred["structural_constraints"],
+        }
     if not isinstance(structure, dict):
         return None
     family = re.sub(r"[^a-z0-9]+", "_", str(structure.get("family") or "").lower()).strip("_")
@@ -171,6 +185,9 @@ def _semantic_envelope(problem: str, structure) -> dict | None:
         "linear_constraints": "symbolic_linear_constraints",
         "linear_equations": "symbolic_linear_constraints",
         "symbolic_linear_system": "symbolic_linear_constraints",
+        "knight_knave_spy": "truth_role_assignment",
+        "role_assignment": "truth_role_assignment",
+        "truth_teller_liar_assignment": "truth_role_assignment",
     }
     family = aliases.get(family, family)
     goal = {
@@ -179,6 +196,9 @@ def _semantic_envelope(problem: str, structure) -> dict | None:
         "evaluate_linear_target": "solve_linear_target",
         "topological_order": "linearize_order",
         "prove_entailment": "prove_existential_relation",
+        "assign_roles": "identify_role_assignment",
+        "determine_roles": "identify_role_assignment",
+        "solve_role_assignment": "identify_role_assignment",
     }.get(goal, goal)
     if not family or not goal:
         raise ValueError("structure.family and structure.goal are required")
@@ -302,18 +322,41 @@ def organic_reason(args, **kwargs):
         if semantic_envelope is not None:
             payload["semantic_envelope"] = semantic_envelope
         response = _runtime_api("POST", "/api/message", payload)
+        metadata = response.get("metadata") or {}
+        presenter_packet = metadata.get("presenter_packet") or {}
+        answer = str(response.get("answer") or "").strip()
         return _json({
             "status": "OK",
-            "answer": response.get("answer"),
+            "answer": answer,
             "route": response.get("route"),
             "request_id": response.get("request_id"),
             "trace_id": response.get("trace_id"),
             "gate": response.get("gate"),
-            "metadata": response.get("metadata") or {},
+            "metadata": {
+                "core_invoked": metadata.get("core_invoked"),
+                "growth_invoked": metadata.get("growth_invoked"),
+                "processor_version": metadata.get("processor_version"),
+                "processor_cycles": metadata.get("processor_cycles"),
+                "processor_operators": metadata.get("processor_operators") or [],
+                "presenter_packet": presenter_packet,
+                "semantic_interface_completeness": metadata.get(
+                    "semantic_interface_completeness"
+                ),
+            },
             "context_items_supplied_by_interface": len(context)
             if isinstance(context, list)
             else 0,
-            "full_runtime_pipeline_used": True,
+            "full_runtime_pipeline_used": bool(
+                metadata.get("core_invoked")
+                and int(metadata.get("processor_cycles") or 0) > 0
+                and presenter_packet.get("verified") is True
+            ),
+            "_hermes_control": {
+                "source": "organic-ai",
+                "return_direct": True,
+                "authoritative": True,
+                "answer": answer,
+            },
             "fallback_used": False,
         })
     except Exception as exc:

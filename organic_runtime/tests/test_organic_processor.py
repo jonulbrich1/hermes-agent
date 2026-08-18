@@ -102,6 +102,33 @@ def _truth_lie_task() -> StructuralTask:
     )
 
 
+def _truth_role_task() -> StructuralTask:
+    return StructuralTask(
+        family="truth_role_assignment",
+        goal="identify_role_assignment",
+        constraints=(
+            {
+                "kind": "assignment_domain",
+                "entities": ["Alex", "Ben", "Cody"],
+                "roles": ["knight", "knave", "spy"],
+                "bijection": True,
+            },
+            {"kind": "role_truth_policy", "role": "knight", "truthful": True},
+            {"kind": "role_truth_policy", "role": "knave", "truthful": False},
+            {"kind": "role_truth_policy", "role": "spy", "truthful": None},
+            {"kind": "role_statement", "speaker": "Alex", "subject": "Cody", "role": "knave"},
+            {"kind": "role_statement", "speaker": "Ben", "subject": "Alex", "role": "knight"},
+            {"kind": "role_statement", "speaker": "Cody", "subject": "Cody", "role": "spy"},
+        ),
+        required_operations=(
+            "ENUMERATE_CASES",
+            "TEST_ENTAILMENT",
+            "VERIFY_ALL_CASES",
+            "STOP_IF_VERIFIED",
+        ),
+    )
+
+
 def _linear_task(prefix: str = "") -> StructuralTask:
     head, body, tail = (f"{prefix}{name}" for name in ("head", "body", "tail"))
     return StructuralTask(
@@ -327,6 +354,18 @@ def test_truth_lie_question_is_verified_for_both_responder_types(tmp_path):
     assert verification.checks["indicated_road_is_truth_in_all_cases"] is True
 
 
+def test_truth_role_assignment_is_enumerated_and_independently_verified(tmp_path):
+    task = _truth_role_task()
+    result = OrganicProcessor(tmp_path / "processor.json").process(task)
+
+    assert result.trace is not None
+    assert result.answer == {"Alex": "knight", "Ben": "spy", "Cody": "knave"}
+    verification = verify_trace(task, result.trace)
+    assert verification.accepted is True
+    assert verification.checks["all_role_permutations_evaluated"] is True
+    assert verification.checks["exactly_one_consistent_assignment"] is True
+
+
 def test_semantic_finalizer_removes_model_answer_leakage():
     request = (
         "There are two ducks in front of a duck, two ducks behind a duck and a duck "
@@ -454,6 +493,41 @@ async def test_runtime_answers_truth_lie_navigation_without_memory_or_web(tmp_pa
             "STOP_IF_VERIFIED",
         ]
         assert response.metadata["decision"]["result_code"] == "verified_truth_lie_navigation"
+        assert response.metadata["presenter_packet"]["verified"] is True
+        assert response.metadata["sources"] == []
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_runs_truth_role_puzzle_through_verified_organic_cycles(tmp_path):
+    settings = RuntimeSettings(
+        backend="mvp",
+        semantic_mode="heuristic",
+        mvp_data_dir=tmp_path / "mvp",
+        trace_dir=tmp_path / "traces",
+        idle_growth_enabled=False,
+        bootstrap_growth_enabled=False,
+    )
+    runtime = build_runtime(settings)
+    try:
+        response = await runtime.handle(
+            "Logic Puzzle: There are three people (Alex, Ben and Cody), one of whom is a "
+            "knight, one a knave and one a spy. The knight always tells the truth, the knave "
+            "always lies and the spy can either lie or tell the truth. Alex says: \"Cody is a "
+            "knave.\" Ben says: \"Alex is a knight.\" Cody says: \"I am the spy.\" Who is the "
+            "knight, who is the knave and who is the spy?"
+        )
+
+        assert response.answer.startswith("Verified role assignment: Alex is the knight")
+        assert response.metadata["processor_cycles"] == 1
+        assert response.metadata["processor_operators"] == [
+            "ENUMERATE_CASES",
+            "TEST_ENTAILMENT",
+            "VERIFY_ALL_CASES",
+            "STOP_IF_VERIFIED",
+        ]
+        assert response.metadata["decision"]["result_code"] == "verified_truth_role_assignment"
         assert response.metadata["presenter_packet"]["verified"] is True
         assert response.metadata["sources"] == []
     finally:

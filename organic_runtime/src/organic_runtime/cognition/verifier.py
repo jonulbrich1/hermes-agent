@@ -188,6 +188,66 @@ def _expected_truth_lie_question(task: StructuralTask) -> tuple[dict[str, str] |
     )
 
 
+def _expected_truth_role_assignment(
+    task: StructuralTask,
+) -> tuple[dict[str, str] | None, int, int]:
+    """Independently enumerate a finite role puzzle from its original constraints."""
+    domains = [item for item in task.constraints if item.get("kind") == "assignment_domain"]
+    if len(domains) != 1 or domains[0].get("bijection") is not True:
+        return None, 0, 0
+    entities = [str(item).strip() for item in (domains[0].get("entities") or [])]
+    roles = [str(item).strip().lower() for item in (domains[0].get("roles") or [])]
+    if (
+        not 2 <= len(entities) <= 8
+        or len(entities) != len(roles)
+        or len(set(entities)) != len(entities)
+        or len(set(roles)) != len(roles)
+        or not all(entities)
+        or not all(roles)
+    ):
+        return None, 0, 0
+
+    policies: dict[str, bool | None] = {}
+    statements: list[tuple[str, str, str]] = []
+    for item in task.constraints:
+        kind = item.get("kind")
+        if kind == "assignment_domain":
+            continue
+        if kind == "role_truth_policy":
+            role = str(item.get("role") or "").strip().lower()
+            truthful = item.get("truthful")
+            if role not in roles or truthful not in (True, False, None) or role in policies:
+                return None, 0, 0
+            policies[role] = truthful
+            continue
+        if kind == "role_statement":
+            statement = (
+                str(item.get("speaker") or "").strip(),
+                str(item.get("subject") or "").strip(),
+                str(item.get("role") or "").strip().lower(),
+            )
+            if statement[0] not in entities or statement[1] not in entities or statement[2] not in roles:
+                return None, 0, 0
+            statements.append(statement)
+            continue
+        return None, 0, 0
+    if set(policies) != set(roles) or not statements:
+        return None, 0, 0
+
+    valid: list[dict[str, str]] = []
+    total = 0
+    for permutation in itertools.permutations(roles):
+        total += 1
+        assignment = dict(zip(entities, permutation))
+        if all(
+            policies[assignment[speaker]] is None
+            or (assignment[subject] == claimed_role) is policies[assignment[speaker]]
+            for speaker, subject, claimed_role in statements
+        ):
+            valid.append(assignment)
+    return (valid[0] if len(valid) == 1 else None), total, len(valid)
+
+
 def _independent_linear_result(task: StructuralTask) -> dict[str, Any] | None:
     """Solve again outside processor operators and verify every original equation."""
     if any(
@@ -447,6 +507,43 @@ def verify_trace(task: StructuralTask, trace: ProcessTrace) -> TraceVerification
             reward=1.0 if matches else -0.65,
             result_code=(
                 "verified_truth_lie_navigation" if matches else "rejected_truth_lie_question"
+            ),
+            checks=checks,
+            expected=expected,
+        )
+
+    if task.goal == "identify_role_assignment" and kinds == {
+        "assignment_domain",
+        "role_truth_policy",
+        "role_statement",
+    }:
+        expected, expected_case_count, valid_case_count = _expected_truth_role_assignment(task)
+        trace_case_count = 0
+        for intermediate in trace.intermediate:
+            state = intermediate.get("state") if isinstance(intermediate, dict) else None
+            cases = state.get("case_results") if isinstance(state, dict) else None
+            if isinstance(cases, list):
+                trace_case_count = max(trace_case_count, len(cases))
+        shaped = isinstance(trace.answer, dict) and all(
+            isinstance(entity, str) and entity and isinstance(role, str) and role
+            for entity, role in trace.answer.items()
+        )
+        all_cases_evaluated = expected_case_count > 0 and trace_case_count == expected_case_count
+        matches = shaped and expected is not None and trace.answer == expected and all_cases_evaluated
+        checks = {
+            "answer_is_role_assignment": shaped,
+            "all_role_permutations_evaluated": all_cases_evaluated,
+            "exactly_one_consistent_assignment": valid_case_count == 1,
+            "assignment_matches_independent_verifier": bool(matches),
+            "external_resources_used": False,
+        }
+        return TraceVerification(
+            accepted=bool(matches),
+            reward=1.0 if matches else -0.65,
+            result_code=(
+                "verified_truth_role_assignment"
+                if matches
+                else "rejected_truth_role_assignment"
             ),
             checks=checks,
             expected=expected,

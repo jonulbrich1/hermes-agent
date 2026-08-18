@@ -244,19 +244,13 @@
     var busyPair = useState(false);
     var busy = busyPair[0];
     var setBusy = busyPair[1];
-    var textPair = useState("");
-    var text = textPair[0];
-    var setText = textPair[1];
     var errorPair = useState("");
     var error = errorPair[0];
     var setError = errorPair[1];
     var noticePair = useState("");
     var notice = noticePair[0];
     var setNotice = noticePair[1];
-    var transcriptPair = useState([]);
-    var transcript = transcriptPair[0];
-    var setTranscript = transcriptPair[1];
-    var last = transcript.length ? transcript[transcript.length - 1].response : null;
+    var last = (state && state.latest_run_result) || null;
 
     var refresh = useCallback(function () {
       return Promise.all([
@@ -297,40 +291,6 @@
         return refresh();
       }).catch(function (err) {
         setError(errorText(err));
-      }).finally(function () {
-        setBusy(false);
-      });
-    }
-
-    function send() {
-      var clean = text.trim();
-      if (!clean || busy) return;
-      setText("");
-      setTranscript(function (rows) {
-        return rows.concat([{ role: "user", text: clean, time: Date.now() }]);
-      });
-      setBusy(true);
-      setNotice("Running Organic workflow");
-      setError("");
-      postJSON("/message", { text: clean }).then(function (response) {
-        setTranscript(function (rows) {
-          return rows.concat([{
-            role: "assistant",
-            text: response.answer || "",
-            route: response.route,
-            metadata: response.metadata || {},
-            response: response,
-            time: Date.now(),
-          }]);
-        });
-        setNotice("Workflow complete");
-        return refresh();
-      }).catch(function (err) {
-        var msg = errorText(err);
-        setError(msg);
-        setTranscript(function (rows) {
-          return rows.concat([{ role: "error", text: msg, time: Date.now() }]);
-        });
       }).finally(function () {
         setBusy(false);
       });
@@ -377,9 +337,12 @@
       error ? h("div", { className: "oa-alert" }, error) : null,
       notice ? h("div", { className: "oa-notice" }, notice) : null,
       h("div", { className: "oa-actions" },
-        h(ActionButton, { onClick: refresh, disabled: busy }, "Refresh"),
         h(ActionButton, {
           primary: true,
+          onClick: function () { window.location.assign("/chat"); },
+        }, "Open Chat"),
+        h(ActionButton, { onClick: refresh, disabled: busy }, "Refresh"),
+        h(ActionButton, {
           disabled: busy,
           onClick: function () { runAction("Growth requested", function () { return postJSON("/growth", { cycles: 1 }); }); },
         }, "Run Growth"),
@@ -402,27 +365,13 @@
       ),
       h("div", { className: "oa-layout" },
         h("main", { className: "oa-chat" },
-          h(Panel, { title: "Conversation" },
-            h("div", { className: "oa-transcript" },
-              transcript.length ? transcript.map(function (msg, index) {
-                return h(Message, { key: index, message: msg });
-              }) : h(Empty, null, "No conversation in this dashboard session")
-            ),
-            h("div", { className: "oa-composer" },
-              h("textarea", {
-                value: text,
-                disabled: busy,
-                placeholder: "Ask through the Organic workflow",
-                onChange: function (event) { setText(event.target.value); },
-                onKeyDown: function (event) {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    send();
-                  }
-                },
-              }),
-              h(ActionButton, { primary: true, disabled: busy || !text.trim(), onClick: send }, busy ? "Running" : "Send")
-            )
+          h(Panel, { title: "Latest Organic Run" },
+            last ? h(Message, { message: {
+              role: "assistant",
+              text: last.answer || "",
+              route: last.route,
+              metadata: last.metadata || {},
+            } }) : h(Empty, null, "No Organic run results")
           ),
           h(Panel, { title: "Pipeline" }, h(Pipeline, { last: last }))
         ),

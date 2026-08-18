@@ -166,6 +166,35 @@ _HANDOFF_SKIP_FINAL_RESPONSE = (
 )
 
 
+def _authoritative_tool_return_answer(messages: List[Dict[str, Any]]) -> str:
+    """Read a trusted return-direct envelope from the latest tool batch."""
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            break
+        tool_name = str(message.get("name") or "")
+        if not tool_name.startswith("organic_"):
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            continue
+        control = payload.get("_hermes_control") if isinstance(payload, dict) else None
+        if not isinstance(control, dict):
+            continue
+        answer = str(control.get("answer") or "").strip()
+        if (
+            control.get("source") == "organic-ai"
+            and control.get("return_direct") is True
+            and control.get("authoritative") is True
+            and answer
+        ):
+            return answer
+    return ""
+
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -2767,6 +2796,10 @@ def run_conversation(
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
 
+                _middleware_disable_streaming = bool(
+                    api_kwargs.pop("_hermes_disable_streaming", False)
+                )
+
                 try:
                     from hermes_cli.lifecycle import (
                         has_hook,
@@ -2878,7 +2911,7 @@ def run_conversation(
                     if agent.thinking_callback:
                         agent.thinking_callback("")
 
-                _use_streaming = True
+                _use_streaming = not _middleware_disable_streaming
                 # Provider signaled "stream not supported" on a previous
                 # attempt — switch to non-streaming for the rest of this
                 # session instead of re-failing every retry.
@@ -7163,6 +7196,23 @@ def run_conversation(
                                 agent.stream_delta_callback(None)
                             except Exception:
                                 pass
+                    break
+
+                _authoritative_answer = _authoritative_tool_return_answer(messages)
+                if _authoritative_answer:
+                    _turn_exit_reason = "authoritative_tool_return"
+                    final_response = _authoritative_answer
+                    append_message(
+                        messages,
+                        {"role": "assistant", "content": final_response},
+                    )
+                    agent._safe_print(f"\n{final_response}\n")
+                    if agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
                     break
 
                 # Reset per-turn retry counters after successful tool

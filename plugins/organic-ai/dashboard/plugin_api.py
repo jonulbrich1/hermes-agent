@@ -121,6 +121,26 @@ def _safe_counts(paths: dict[str, str]) -> dict[str, int]:
     }
 
 
+def _latest_run_result(paths: dict[str, str]) -> dict[str, Any] | None:
+    run_dir = Path(paths["mvp_data_dir"]) / "run_results"
+    if not run_dir.exists():
+        return None
+    candidates = sorted(
+        run_dir.glob("*.json"),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            payload["artifact_path"] = str(path)
+            return payload
+    return None
+
+
 def _mcp_server_config() -> dict[str, Any]:
     _prepare_env()
     root = _project_root()
@@ -485,6 +505,7 @@ def _enhance_state(state: dict[str, Any]) -> dict[str, Any]:
         or "configured by Hermes",
         "base_url": os.environ.get("CUSTOM_BASE_URL"),
     }
+    state["latest_run_result"] = _latest_run_result(paths)
     state["mcp_server_template"] = {
         "command": _mcp_server_config()["command"],
         "args": _mcp_server_config()["args"],
@@ -576,13 +597,10 @@ async def packages(limit: int = 10) -> dict[str, Any]:
 
 @router.post("/message")
 async def message(body: dict[str, Any]) -> dict[str, Any]:
-    text = str(body.get("text") or "")
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="Message must not be empty.")
-    try:
-        return await _runtime_post("/message", {"text": text})
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    raise HTTPException(
+        status_code=409,
+        detail="Organic conversations must start in Hermes Chat so the configured Semantic Interface model and Organic tool gate both run.",
+    )
 
 
 @router.post("/growth")

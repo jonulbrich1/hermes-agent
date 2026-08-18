@@ -2,7 +2,7 @@
 
 from . import schemas
 from . import tools
-from .middleware import on_llm_request, on_tool_execution
+from .middleware import on_llm_execution, on_llm_request, on_tool_execution
 
 
 def _on_session_start(**kwargs):
@@ -85,6 +85,7 @@ def register(ctx):
 
     # Hermes v0.20.2 middleware API.
     ctx.register_middleware("llm_request", on_llm_request)
+    ctx.register_middleware("llm_execution", on_llm_execution)
     ctx.register_middleware("tool_execution", on_tool_execution)
 
     ctx.register_hook("on_session_start", _on_session_start)

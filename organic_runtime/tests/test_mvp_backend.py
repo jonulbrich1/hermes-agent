@@ -645,7 +645,7 @@ async def test_self_contained_duck_puzzle_uses_organic_processor_without_growth(
         assert response.metadata["sources"] == []
         assert response.metadata["semantic_completeness_complete"] is True
         assert response.metadata["reasoning_trace"]["model"]["minimal_model"] is True
-        assert response.metadata["processor_version"] == "0.11.0-rc2"
+        assert response.metadata["processor_version"] == "0.11.0-rc3"
         assert response.metadata["v7_seed"]["experience_count"] == 930_838
         assert response.metadata["presenter_packet"]["verified"] is True
         assert response.metadata["presenter_packet"]["answer"] == 3

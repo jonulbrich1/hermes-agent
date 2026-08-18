@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,28 +86,6 @@ request = {
         {"type": "function", "function": {"name": "web_search", "parameters": {}}},
     ],
 }
-handoff_requests = []
-
-
-def _fake_handoff(text):
-    handoff_requests.append(text)
-    return {
-        "answer": "Validated Organic answer.",
-        "route": "organic_core",
-        "trace_id": "test-trace",
-        "metadata": {
-            "hard_blocked": False,
-            "semantic_interface_completeness": {"complete": True},
-            "presenter_packet": {
-                "status": "VERIFIED",
-                "verified": True,
-                "answer": "Validated Organic answer.",
-            },
-        },
-    }
-
-
-organic_middleware._organic_handoff = _fake_handoff
 organic_middleware._TURNS.clear()
 out = on_llm_request(request=request, turn_id="fork-test")["request"]
 names = {t["function"]["name"] for t in out.get("tools", [])}
@@ -118,7 +97,22 @@ T(
     "Hermes first pass uses its configured model with Organic tool",
     names == {"organic_reason"},
 )
-T("Normal Hermes tool path does not start a side-model handoff", handoff_requests == [])
+T(
+    "Organic route requires the exposed Qwen tool call",
+    out.get("tool_choice") == "required"
+    and out.get("max_tokens") == 256
+    and out.get("_hermes_disable_streaming") is True,
+)
+try:
+    on_llm_request(
+        request={"messages": request["messages"], "tools": []},
+        turn_id="fork-missing-tool-test",
+    )
+except RuntimeError as exc:
+    missing_tool_failed_closed = "Semantic Interface cannot be bypassed" in str(exc)
+else:
+    missing_tool_failed_closed = False
+T("Missing Organic tool fails closed instead of using a direct handoff", missing_tool_failed_closed)
 T(
     "Organic reason schema teaches structural translation",
     "structure" in pkg.schemas.ORGANIC_REASON["parameters"]["properties"],
@@ -145,6 +139,41 @@ T(
     json.dumps(generic),
 )
 
+role_problem = (
+    "There are three people (Alex, Ben and Cody), one of whom is a knight, one a knave and "
+    "one a spy. The knight always tells the truth, the knave always lies and the spy can "
+    "either lie or tell the truth. Alex says: \"Cody is a knave.\" Ben says: \"Alex is a "
+    "knight.\" Cody says: \"I am the spy.\" Who has each role?"
+)
+role_envelope = pkg.tools._semantic_envelope(role_problem, None)
+T(
+    "Organic tool deterministically completes an omitted truth-role structure",
+    role_envelope is not None
+    and role_envelope["reasoning_family"] == "truth_role_assignment"
+    and role_envelope["reasoning_goal"] == "identify_role_assignment",
+    json.dumps(role_envelope),
+)
+
+canonical_args = []
+organic_middleware.on_llm_request(
+    request={
+        "messages": [{"role": "user", "content": role_problem}],
+        "tools": [request["tools"][0]],
+    },
+    turn_id="canonical-problem-test",
+)
+organic_middleware.on_tool_execution(
+    tool_name="organic_reason",
+    turn_id="canonical-problem-test",
+    args={"problem": "A lossy model paraphrase.", "structure": {"family": "test"}},
+    next_call=lambda args: canonical_args.append(args) or "{}",
+)
+T(
+    "Organic execution preserves the exact user problem across Qwen tool arguments",
+    canonical_args[0]["problem"] == role_problem
+    and canonical_args[0]["structure"] == {"family": "test"},
+)
+
 organic_middleware.on_tool_execution(
     tool_name="organic_reason",
     turn_id="fork-test",
@@ -168,6 +197,90 @@ T(
     "Hermes original user turn drives Organic middleware",
     {t["function"]["name"] for t in provider_shaped.get("tools", [])}
     == {"organic_reason"},
+)
+
+recovery_request = on_llm_request(
+    request=request,
+    turn_id="fork-recovery-test",
+)["request"]
+recovery_calls = []
+recovered = organic_middleware.on_llm_execution(
+    request=recovery_request,
+    turn_id="fork-recovery-test",
+    api_mode="chat_completions",
+    next_call=lambda request: recovery_calls.append(request)
+    or SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="A direct model answer.", tool_calls=None),
+                finish_reason="stop",
+            )
+        ]
+    ),
+)
+recovered_call = recovered.choices[0].message.tool_calls[0]
+T(
+    "Text-only Qwen output is recovered through the Hermes tool dispatcher",
+    recovered_call.function.name == "organic_reason"
+    and json.loads(recovered_call.function.arguments)["problem"]
+    == "What causes plate tectonics?"
+    and recovered.choices[0].finish_reason == "tool_calls"
+    and len(recovery_calls) == 1,
+)
+
+native_tool_response = SimpleNamespace(
+    choices=[
+        SimpleNamespace(
+            message=SimpleNamespace(
+                content=None,
+                tool_calls=[
+                    SimpleNamespace(
+                        id="call_native",
+                        type="function",
+                        function=SimpleNamespace(
+                            name="organic_reason", arguments='{"problem":"native"}'
+                        ),
+                    )
+                ],
+            ),
+            finish_reason="tool_calls",
+        )
+    ]
+)
+native_passed = organic_middleware.on_llm_execution(
+    request=provider_shaped,
+    turn_id="fork-explicit-user-test",
+    api_mode="chat_completions",
+    next_call=lambda request: native_tool_response,
+)
+T(
+    "Native Qwen tool calls pass through without replacement",
+    native_passed is native_tool_response,
+)
+
+presenter_calls = []
+organic_middleware.on_tool_execution(
+    tool_name="organic_reason",
+    turn_id="organic-presenter-test",
+    args={"problem": role_problem},
+    next_call=lambda args: json.dumps(
+        {
+            "status": "OK",
+            "answer": "Verified Organic packet.",
+            "metadata": {"presenter_packet": {"verified": True}},
+        }
+    ),
+)
+presented = organic_middleware.on_llm_execution(
+    request={"messages": [], "tools": []},
+    turn_id="organic-presenter-test",
+    api_mode="chat_completions",
+    next_call=lambda request: presenter_calls.append(request),
+)
+T(
+    "Hermes cannot replace the authoritative Organic presenter packet",
+    presented.choices[0].message.content == "Verified Organic packet."
+    and presenter_calls == [],
 )
 
 with tempfile.TemporaryDirectory() as td:

@@ -123,6 +123,14 @@ css = (DASHBOARD / "dist" / "style.css").read_text(encoding="utf-8")
 T("Dashboard JS registers Organic plugin", 'register("organic-ai"' in js)
 T("Dashboard JS calls plugin API", "/api/plugins/organic-ai" in js)
 T(
+    "Dashboard conversations use native Hermes Chat",
+    'window.location.assign("/chat")' in js and 'postJSON("/message"' not in js,
+)
+T(
+    "Dashboard exposes the latest full Organic run",
+    "latest_run_result" in js and "Latest Organic Run" in js,
+)
+T(
     "Dashboard JS shows full pipeline",
     "Semantic Interface LLM" in js and "Memory Compiler / Validator" in js,
 )

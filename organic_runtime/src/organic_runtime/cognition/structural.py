@@ -188,6 +188,114 @@ def _infer_truth_lie_navigation(text: str) -> dict[str, Any] | None:
     }
 
 
+def _infer_truth_role_assignment(text: str) -> dict[str, Any] | None:
+    """Compile bounded knight/knave-style role puzzles without solving them."""
+    truth_policies: dict[str, bool | None] = {}
+    policy_patterns = (
+        (r"\bthe\s+([a-z][a-z-]*)\s+always\s+tells?\s+the\s+truth\b", True),
+        (r"\bthe\s+([a-z][a-z-]*)\s+always\s+lies\b", False),
+        (
+            (
+                r"\bthe\s+([a-z][a-z-]*)\s+can\s+(?:either\s+)?"
+                r"(?:lie|tell\s+the\s+truth)(?:\s+or\s+(?:lie|tell\s+the\s+truth))?\b"
+            ),
+            None,
+        ),
+    )
+    for pattern, truthful in policy_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            truth_policies[match.group(1).lower()] = truthful
+    if len(truth_policies) < 2 or True not in truth_policies.values() or False not in truth_policies.values():
+        return None
+
+    quoted_statements = re.compile(
+        rf"\b(?P<speaker>{_NAME})\s+says\s*:\s*[\"\u201c'](?P<body>.*?)[\"\u201d']",
+        re.IGNORECASE,
+    )
+    statements: list[dict[str, str]] = []
+    for match in quoted_statements.finditer(text):
+        speaker = match.group("speaker")
+        body = match.group("body").strip().rstrip(".?!").strip()
+        proposition = re.fullmatch(
+            rf"(?P<subject>I|{_NAME})\s+(?:am|is)\s+(?:a|an|the)\s+"
+            r"(?P<role>[a-z][a-z-]*)",
+            body,
+            re.IGNORECASE,
+        )
+        if proposition is None:
+            return None
+        subject = proposition.group("subject")
+        role = proposition.group("role").lower()
+        if subject.lower() == "i":
+            subject = speaker
+        statements.append(
+            {
+                "kind": "role_statement",
+                "speaker": speaker,
+                "subject": subject,
+                "role": role,
+            }
+        )
+    if not statements:
+        return None
+
+    entities: list[str] = []
+    introduction = re.search(
+        rf"\bthere\s+are\s+{_COUNT}\s+people\s*\((?P<names>[^)]+)\)",
+        text,
+        re.IGNORECASE,
+    )
+    if introduction:
+        for name in re.split(r"\s*(?:,|\band\b)\s*", introduction.group("names"), flags=re.IGNORECASE):
+            clean = name.strip()
+            if re.fullmatch(_NAME, clean) and clean not in entities:
+                entities.append(clean)
+    for statement in statements:
+        for key in ("speaker", "subject"):
+            entity = statement[key]
+            if entity not in entities:
+                entities.append(entity)
+
+    roles = list(truth_policies)
+    if (
+        len(entities) != len(roles)
+        or not 2 <= len(entities) <= 8
+        or any(statement["role"] not in truth_policies for statement in statements)
+        or any(entity not in {item["speaker"] for item in statements} for entity in entities)
+    ):
+        return None
+
+    return {
+        "closed_world": True,
+        "sufficient_premises": True,
+        "reasoning_family": "truth_role_assignment",
+        "reasoning_goal": "identify_role_assignment",
+        "required_operations": [
+            "ENUMERATE_CASES",
+            "TEST_ENTAILMENT",
+            "VERIFY_ALL_CASES",
+            "STOP_IF_VERIFIED",
+        ],
+        "structural_constraints": [
+            {
+                "kind": "assignment_domain",
+                "entities": entities,
+                "roles": roles,
+                "bijection": True,
+            },
+            *[
+                {
+                    "kind": "role_truth_policy",
+                    "role": role,
+                    "truthful": truthful,
+                }
+                for role, truthful in truth_policies.items()
+            ],
+            *statements,
+        ],
+    }
+
+
 def infer_structural_fields(request: str) -> dict[str, Any] | None:
     """Compile recognized task-local language without solving the task."""
     text = " ".join(request.strip().split())
@@ -198,6 +306,9 @@ def infer_structural_fields(request: str) -> dict[str, Any] | None:
     truth_lie = _infer_truth_lie_navigation(text)
     if truth_lie:
         return truth_lie
+    truth_roles = _infer_truth_role_assignment(text)
+    if truth_roles:
+        return truth_roles
     boolean_case = _infer_boolean_case_analysis(text)
     if boolean_case:
         return boolean_case

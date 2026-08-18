@@ -91,6 +91,21 @@ _HERMES_CORE_TOOLS = [
     "computer_use",
 ]
 
+# Plugin tools that participate in request-control middleware must remain in
+# the provider-facing schema when their plugin/toolset is enabled. They are
+# not Hermes core tools and are not implicitly enabled on any platform.
+_ALWAYS_VISIBLE_PLUGIN_TOOLS = frozenset({
+    "organic_get_state",
+    "organic_memory_search",
+    "organic_reason",
+    "organic_research",
+    "organic_submit_evidence",
+    "organic_validate_claim",
+    "organic_growth_frontier",
+    "organic_growth_cycle",
+    "organic_export_review",
+})
+
 # Webhook events may originate from untrusted third-party content (for example,
 # public PR titles/comments). Keep the default webhook toolset intentionally
 # constrained to avoid local file/system execution by prompt injection.

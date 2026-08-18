@@ -152,6 +152,30 @@ def test_structural_compiler_builds_truth_lie_cases_without_embedding_answer():
     )
 
 
+def test_structural_compiler_builds_truth_role_assignment_without_answer():
+    structural = infer_structural_fields(
+        "Logic Puzzle: There are three people (Alex, Ben and Cody), one of whom is a knight, "
+        "one a knave and one a spy. The knight always tells the truth, the knave always lies "
+        "and the spy can either lie or tell the truth. Alex says: \"Cody is a knave.\" Ben "
+        "says: \"Alex is a knight.\" Cody says: \"I am the spy.\" Who has each role?"
+    )
+
+    assert structural is not None
+    assert structural["reasoning_family"] == "truth_role_assignment"
+    assert structural["reasoning_goal"] == "identify_role_assignment"
+    domain = next(
+        item for item in structural["structural_constraints"]
+        if item.get("kind") == "assignment_domain"
+    )
+    assert domain == {
+        "kind": "assignment_domain",
+        "entities": ["Alex", "Ben", "Cody"],
+        "roles": ["knight", "knave", "spy"],
+        "bijection": True,
+    }
+    assert all("answer" not in item for item in structural["structural_constraints"])
+
+
 def test_structural_compiler_builds_transitive_order_premises_without_answer():
     structural = infer_structural_fields(
         "Five people were eating apples, A finished before B, but behind C. "

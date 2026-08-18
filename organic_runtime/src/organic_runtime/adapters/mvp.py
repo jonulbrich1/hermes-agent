@@ -150,6 +150,25 @@ def _format_truth_lie_question(answer: Any) -> str:
     )
 
 
+def _format_truth_role_assignment(task: StructuralTask, answer: Any) -> str:
+    if not isinstance(answer, dict):
+        return ""
+    domain = next(
+        (item for item in task.constraints if item.get("kind") == "assignment_domain"),
+        {},
+    )
+    entities = [str(item) for item in (domain.get("entities") or [])]
+    if not entities or set(answer) != set(entities):
+        return ""
+    assignments = "; ".join(
+        f"{entity} is the {str(answer[entity]).lower()}" for entity in entities
+    )
+    return (
+        f"Verified role assignment: {assignments}. The Organic Processor enumerated every "
+        "permitted role assignment and its independent verifier found exactly one consistent model."
+    )
+
+
 class MvpOrganicSystem:
     """Shared bridge from the scaffold contracts into the hardened MVP modules."""
 
@@ -1277,6 +1296,8 @@ class MvpOrganicSystem:
             answer = _format_boolean_entailment(structural_task, bool(answer_value))
         elif accepted and structural_task and structural_task.goal == "identify_truth_road":
             answer = _format_truth_lie_question(answer_value)
+        elif accepted and structural_task and structural_task.goal == "identify_role_assignment":
+            answer = _format_truth_role_assignment(structural_task, answer_value)
         elif accepted and structural_task and structural_task.goal == "solve_linear_target":
             result = answer_value if isinstance(answer_value, dict) else {}
             values = result.get("values") if isinstance(result.get("values"), dict) else {}
