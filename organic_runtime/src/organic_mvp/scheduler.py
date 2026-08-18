@@ -558,9 +558,9 @@ class OrganicEngine:
             self.db.add_task_event(tid, 'PREEMPTED', 'Higher-priority user work arrived before external search.')
             return
         docs = self._search_learn(tid, query, task.get('generated_reason') or 'idle graph growth',
-                                  max_fetches=int(self.config.get('idle_max_source_fetches', 2)),
+                                  max_fetches=int(self.config.get('idle_max_source_fetches', 1)),
                                   max_sentences_per_source=int(
-                                      self.config.get('idle_max_sentences_per_source', 80)
+                                      self.config.get('idle_max_sentences_per_source', 20)
                                   ))
         after_degree = self.db.concept_degree(target_id)
         after_claims = self.db.counts()['claims']

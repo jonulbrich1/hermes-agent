@@ -182,6 +182,8 @@ class MvpOrganicSystem:
                 "auto_review_idle_every": 0,
                 "interaction_fetch_limit": 2,
                 "interaction_search_results": 4,
+                "idle_max_source_fetches": 1,
+                "idle_max_sentences_per_source": 20,
                 "max_sentences_per_source": 350,
             }
             if settings.local_corpus_dir:

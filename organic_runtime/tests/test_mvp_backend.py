@@ -104,6 +104,8 @@ def test_mvp_backend_starts_idle_growth_and_bootstraps_memory(tmp_path):
         assert counts["sources"] > 0
         assert counts["claims"] > 0
         assert runtime.growth.system.config.get("idle_growth_enabled") is True
+        assert runtime.growth.system.config.get("idle_max_source_fetches") == 1
+        assert runtime.growth.system.config.get("idle_max_sentences_per_source") == 20
         assert runtime.growth.system.engine.state()["running"] is True
     finally:
         _close(runtime)
