@@ -9,14 +9,14 @@ import urllib.request
 from configure_organic_hermes import ROOT, organic_environment, runtime_python
 
 
-STATE_URL = "http://127.0.0.1:8788/api/state"
+HEALTH_URL = "http://127.0.0.1:8788/api/health"
 
 
 def runtime_ready(timeout: float = 1.0) -> bool:
     try:
-        with urllib.request.urlopen(STATE_URL, timeout=timeout) as response:
+        with urllib.request.urlopen(HEALTH_URL, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
-        return payload.get("runtime", {}).get("status") == "healthy"
+        return payload.get("status") == "healthy"
     except Exception:
         return False
 

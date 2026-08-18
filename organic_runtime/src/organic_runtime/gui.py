@@ -837,6 +837,9 @@ class GuiHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
         try:
+            if path == "/api/health":
+                self.send_json({"status": "healthy"})
+                return
             if path == "/":
                 self.send_html()
                 return
