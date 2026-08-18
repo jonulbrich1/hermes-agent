@@ -152,17 +152,8 @@ def test_empty_growth_uses_entity_query_and_suppresses_immediate_retry(tmp_path,
             status="GROUNDED",
             confidence=0.8,
         )
-        noise_id = db.upsert_concept(
-            "concept:research",
-            "research",
-            "research",
-            kind="CONCEPT",
-            status="GROUNDED",
-            confidence=0.8,
-        )
         db.touch_concept(target_id, 2)
         db.touch_concept(neighbor_id, 2)
-        db.touch_concept(noise_id, 2)
         db.add_claim(
             "claim:test-growth",
             None,
@@ -184,17 +175,31 @@ def test_empty_growth_uses_entity_query_and_suppresses_immediate_retry(tmp_path,
             0.9,
             "GROUNDED",
         )
-        db.add_relation(
-            "relation:test-noise",
-            "claim:test-growth",
-            None,
-            noise_id,
-            "related_to",
-            neighbor_id,
-            None,
-            0.9,
-            "GROUNDED",
-        )
+        noise_ids = set()
+        for index, label in enumerate(
+            ("research", "handled", "selected", "phrase", "time", "every output")
+        ):
+            noise_id = db.upsert_concept(
+                f"concept:noise:{index}",
+                label,
+                label,
+                kind="CONCEPT",
+                status="GROUNDED",
+                confidence=0.8,
+            )
+            noise_ids.add(noise_id)
+            db.touch_concept(noise_id, 2)
+            db.add_relation(
+                f"relation:test-noise:{index}",
+                "claim:test-growth",
+                None,
+                noise_id,
+                "related_to",
+                neighbor_id,
+                None,
+                0.9,
+                "GROUNDED",
+            )
         task_id = "task:idle:test-empty-growth"
         db.create_task(
             task_id,
@@ -227,9 +232,9 @@ def test_empty_growth_uses_entity_query_and_suppresses_immediate_retry(tmp_path,
         assert neighbor_id in {
             item["concept_id"] for item in system.memory.frontier(limit=20)
         }
-        assert noise_id not in {
+        assert noise_ids.isdisjoint(
             item["concept_id"] for item in system.memory.frontier(limit=20)
-        }
+        )
     finally:
         _close(runtime)
 
