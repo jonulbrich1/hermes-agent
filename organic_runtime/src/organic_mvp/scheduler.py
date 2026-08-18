@@ -68,11 +68,38 @@ class OrganicEngine:
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self._recover_interrupted_tasks()
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name='OrganicGrowthLoop', daemon=True)
         self._thread.start()
         self.logger.info('Organic growth loop started')
         self.audit.write('growth_loop_started')
+
+    def _recover_interrupted_tasks(self) -> None:
+        interrupted = [dict(row) for row in self.db.query("SELECT * FROM tasks WHERE status='ACTIVE'")]
+        for task in interrupted:
+            task_id = task['task_id']
+            kind = str(task.get('kind') or '')
+            if kind in {'USER_TASK', 'USER_INFO_VERIFY', 'URL_INGEST'}:
+                self.db.update_task(task_id, status='PENDING', started_at=None)
+                status = 'PENDING'
+                message = 'Recovered interrupted user-controlled task for retry.'
+            else:
+                status = 'PARTIAL'
+                message = 'Task was interrupted by runtime shutdown; retry cooldown applies.'
+                self.db.update_task(
+                    task_id,
+                    status=status,
+                    completed_at=utcnow(),
+                    result_text=message,
+                )
+            self.db.add_task_event(task_id, 'RECOVERED_AFTER_RESTART', message, {'status': status})
+            self.audit.write(
+                'task_recovered_after_restart',
+                task_id=task_id,
+                task_kind=kind,
+                status=status,
+            )
 
     def stop(self) -> None:
         self._stop.set()
@@ -297,7 +324,14 @@ class OrganicEngine:
         row = self.db.task(tid)
         return dict(row)
 
-    def _search_learn(self, task_id: str, query: str, reason: str, max_fetches: int = 2) -> list[EvidenceDocument]:
+    def _search_learn(
+        self,
+        task_id: str,
+        query: str,
+        reason: str,
+        max_fetches: int = 2,
+        max_sentences_per_source: int | None = None,
+    ) -> list[EvidenceDocument]:
         self.db.add_task_event(task_id, 'QUERY_GENERATED', query, {'reason': reason})
         self.audit.write('self_directed_query', task_id=task_id, query=query, reason=reason)
         results = self.broker.search(query, limit=max(4, max_fetches + 1))
@@ -308,7 +342,11 @@ class OrganicEngine:
             try:
                 doc = self.broker.fetch_result(r)
                 docs.append(doc)
-                ingest = self.memory.ingest(doc, reason=f'{task_id}: {reason}')
+                ingest = self.memory.ingest(
+                    doc,
+                    reason=f'{task_id}: {reason}',
+                    max_sentences=max_sentences_per_source,
+                )
                 self.db.add_task_event(task_id, 'EVIDENCE_INGESTED', doc.title, ingest.__dict__)
             except Exception as exc:
                 self.logger.warning('Evidence fetch/ingest failed for %s: %s', r.url, exc)
@@ -520,7 +558,10 @@ class OrganicEngine:
             self.db.add_task_event(tid, 'PREEMPTED', 'Higher-priority user work arrived before external search.')
             return
         docs = self._search_learn(tid, query, task.get('generated_reason') or 'idle graph growth',
-                                  max_fetches=int(self.config.get('idle_max_source_fetches', 2)))
+                                  max_fetches=int(self.config.get('idle_max_source_fetches', 2)),
+                                  max_sentences_per_source=int(
+                                      self.config.get('idle_max_sentences_per_source', 80)
+                                  ))
         after_degree = self.db.concept_degree(target_id)
         after_claims = self.db.counts()['claims']
         self.db.execute('INSERT INTO growth_history(concept_id,task_id,started_at,completed_at,before_degree,after_degree,result) VALUES(?,?,?,?,?,?,?)',

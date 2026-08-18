@@ -91,13 +91,15 @@ presenter are instructed to preserve that packet and not recompute its result.
   one unresolved topic from monopolizing the autonomous growth frontier.
 - Generic instruction vocabulary is excluded from frontier topics, and repeated
   historical growth rows are collapsed in the GUI without deleting audit data.
+- Idle compilation is capped at 80 sentences per source, and interrupted tasks
+  are reconciled on restart instead of remaining permanently `ACTIVE`.
 
 ## Validation
 
 Validated during integration:
 
 ```text
-76 passed - Organic runtime, processor, Hermes plugin, and dashboard suites
+78 passed - Organic runtime, processor, Hermes plugin, and dashboard suites
 6 passed  - original V11 handoff package tests
 Ruff       - changed Python files passed focused checks
 ```

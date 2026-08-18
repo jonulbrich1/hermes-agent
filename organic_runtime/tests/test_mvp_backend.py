@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from organic_mvp.evidence import EvidenceDocument
 from organic_mvp.memory import growth_retry_delay_seconds
 from organic_mvp.util import utcnow
 from organic_runtime.adapters.mvp import MvpOrganicSystem
@@ -227,6 +228,66 @@ def test_empty_growth_uses_entity_query_and_suppresses_immediate_retry(tmp_path,
         assert noise_id not in {
             item["concept_id"] for item in system.memory.frontier(limit=20)
         }
+    finally:
+        _close(runtime)
+
+
+def test_memory_compiler_honors_idle_sentence_budget(tmp_path):
+    runtime = build_runtime(_settings(tmp_path))
+    try:
+        system = runtime.growth.system
+        source_id = "source:bounded-idle-test"
+        system.db.add_source(
+            source_id,
+            "https://example.com/bounded-idle-test",
+            "Bounded idle test",
+            "test",
+            "bounded-idle-test",
+            "data/source_cache/bounded-idle-test.txt",
+            0.8,
+        )
+        document = EvidenceDocument(
+            source_id=source_id,
+            title="Bounded idle test",
+            url="https://example.com/bounded-idle-test",
+            text=" ".join(
+                f"Topic {index} connects concept alpha to concept beta."
+                for index in range(30)
+            ),
+            provider="test",
+            trust=0.8,
+            cache_path="data/source_cache/bounded-idle-test.txt",
+            metadata={},
+        )
+
+        result = system.memory.ingest(document, reason="bounded test", max_sentences=5)
+
+        assert result.sentences == 5
+        assert result.claims_added == 5
+    finally:
+        _close(runtime)
+
+
+def test_engine_recovers_interrupted_idle_task_as_partial(tmp_path):
+    runtime = build_runtime(_settings(tmp_path))
+    try:
+        system = runtime.growth.system
+        task_id = "task:idle:interrupted-test"
+        system.db.create_task(
+            task_id,
+            "IDLE_GROWTH",
+            "COGNITION",
+            "Interrupted growth test",
+            100,
+            status="ACTIVE",
+        )
+
+        system.engine._recover_interrupted_tasks()
+
+        saved = dict(system.db.task(task_id))
+        assert saved["status"] == "PARTIAL"
+        assert saved["completed_at"]
+        assert "interrupted by runtime shutdown" in saved["result_text"]
     finally:
         _close(runtime)
 

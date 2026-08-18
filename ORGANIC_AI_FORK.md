@@ -86,7 +86,9 @@ RC2 adds independently verified truth/lie case analysis for self-contained
 navigation puzzles. Autonomous graph growth now searches using the selected
 concept label, applies exponential cooldown after empty evidence runs, excludes
 generic instruction vocabulary from the frontier, and collapses duplicate task
-rows in the GUI while retaining the complete audit history.
+rows in the GUI while retaining the complete audit history. Idle source
+compilation is sentence-bounded, and restart recovery closes interrupted growth
+tasks so they cannot remain permanently active.
 
 The optional V9 thought controller runs in shadow mode by default. It can rank
 only programmatically authorized typed actions and has no direct graph, web,

@@ -229,10 +229,24 @@ class MemoryCompiler:
             return False, 'object is not grounded in evidence quote'
         return True, 'grounded'
 
-    def ingest(self, doc: EvidenceDocument, reason: str = '') -> IngestResult:
+    def ingest(
+        self,
+        doc: EvidenceDocument,
+        reason: str = '',
+        max_sentences: int | None = None,
+    ) -> IngestResult:
         result = IngestResult(source_id=doc.source_id)
         text = norm_space(doc.text)
-        sentences = sentence_split(text)[:int(getattr(self.core, 'config', {}).get('max_sentences_per_source', 350) if hasattr(getattr(self.core, 'config', None), 'get') else 350)]
+        configured_limit = int(
+            getattr(self.core, 'config', {}).get('max_sentences_per_source', 350)
+            if hasattr(getattr(self.core, 'config', None), 'get')
+            else 350
+        )
+        sentence_limit = configured_limit
+        if max_sentences is not None:
+            sentence_limit = max(1, min(configured_limit, int(max_sentences)))
+        sentences = sentence_split(text)[:sentence_limit]
+        processed_text = ' '.join(sentences)
         result.sentences = len(sentences)
         self.audit.write('memory_ingest_start', source_id=doc.source_id, title=doc.title, reason=reason, sentences=len(sentences))
 
@@ -276,10 +290,10 @@ class MemoryCompiler:
                 self._commit_relation(p, claim_id, doc, result)
 
         # Optional Processing Core proposals never bypass programmatic evidence validation.
-        proposals = self.core.extract_proposals(text, doc.title)
+        proposals = self.core.extract_proposals(processed_text, doc.title)
         result.core_proposals = len(proposals)
         for p in proposals:
-            ok, why = self._validate_proposal(p, text)
+            ok, why = self._validate_proposal(p, processed_text)
             if not ok:
                 result.core_proposals_rejected += 1
                 self.audit.write('memory_proposal_rejected', source_id=doc.source_id, reason=why,

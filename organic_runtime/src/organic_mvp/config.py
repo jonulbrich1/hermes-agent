@@ -15,6 +15,7 @@ DEFAULTS = {
     "idle_growth_enabled": False,
     "idle_delay_seconds": 15,
     "idle_max_source_fetches": 2,
+    "idle_max_sentences_per_source": 80,
     "task_max_learning_rounds": 4,
     "auto_review_user_tasks": True,
     "auto_review_idle_every": 5,
