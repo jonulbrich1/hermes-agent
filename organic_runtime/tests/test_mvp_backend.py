@@ -235,6 +235,21 @@ def test_empty_growth_uses_entity_query_and_suppresses_immediate_retry(tmp_path,
         assert noise_ids.isdisjoint(
             item["concept_id"] for item in system.memory.frontier(limit=20)
         )
+
+        completed_id = "task:idle:test-completed-growth"
+        db.create_task(
+            completed_id,
+            "IDLE_GROWTH",
+            "COGNITION",
+            "Completed growth test",
+            100,
+            status="COMPLETED",
+            target_concept_id=neighbor_id,
+        )
+        db.update_task(completed_id, completed_at=utcnow(), result_text="Added durable memory")
+        assert neighbor_id not in {
+            item["concept_id"] for item in system.memory.frontier(limit=20)
+        }
     finally:
         _close(runtime)
 
@@ -281,6 +296,70 @@ def test_memory_compiler_honors_idle_sentence_budget(tmp_path, monkeypatch):
         assert result.sentences == 5
         assert result.claims_added == 5
         assert batch_calls == 1
+    finally:
+        _close(runtime)
+
+
+def test_growth_fetch_without_memory_delta_is_partial(tmp_path, monkeypatch):
+    runtime = build_runtime(_settings(tmp_path))
+    try:
+        system = runtime.growth.system
+        system.engine.set_idle_growth(False)
+        target_id = system.db.upsert_concept(
+            "concept:no-delta",
+            "No delta topic",
+            "no delta topic",
+            kind="TOPIC",
+            status="GROUNDED",
+            confidence=0.8,
+        )
+        neighbor_id = system.db.upsert_concept(
+            "concept:no-delta-neighbor",
+            "Existing neighbor",
+            "existing neighbor",
+            kind="TOPIC",
+            status="GROUNDED",
+            confidence=0.8,
+        )
+        system.db.add_claim(
+            "claim:no-delta",
+            None,
+            "test",
+            0,
+            "No delta topic has an existing neighbor.",
+            "No delta topic has an existing neighbor.",
+            0.9,
+            "GROUNDED",
+        )
+        system.db.add_relation(
+            "relation:no-delta",
+            "claim:no-delta",
+            None,
+            target_id,
+            "has",
+            neighbor_id,
+            None,
+            0.9,
+            "GROUNDED",
+        )
+        task_id = "task:idle:no-delta"
+        system.db.create_task(
+            task_id,
+            "IDLE_GROWTH",
+            "COGNITION",
+            "Learn more about no delta topic",
+            100,
+            status="ACTIVE",
+            target_concept_id=target_id,
+        )
+        system.db.update_task(task_id, started_at=utcnow(), attempts=1)
+        monkeypatch.setattr(system.engine, "_search_learn", lambda *args, **kwargs: [object()])
+
+        system.engine._process_growth_task(dict(system.db.task(task_id)))
+
+        saved = dict(system.db.task(task_id))
+        assert saved["status"] == "PARTIAL"
+        assert "No durable memory growth" in saved["result_text"]
     finally:
         _close(runtime)
 

@@ -85,6 +85,7 @@ HARD_REJECT_GROWTH_LABELS = {
 
 GROWTH_FAILURE_BACKOFF_BASE_SECONDS = 5 * 60
 GROWTH_FAILURE_BACKOFF_MAX_SECONDS = 6 * 60 * 60
+GROWTH_SUCCESS_COOLDOWN_SECONDS = 6 * 60 * 60
 
 
 def growth_retry_delay_seconds(failed_attempts: int) -> int:
@@ -105,6 +106,15 @@ def _growth_retry_remaining_seconds(
     now: dt.datetime,
 ) -> int:
     delay = growth_retry_delay_seconds(failed_attempts)
+    return _growth_cooldown_remaining_seconds(last_growth_at, delay, now=now)
+
+
+def _growth_cooldown_remaining_seconds(
+    last_growth_at: str | None,
+    delay: int,
+    *,
+    now: dt.datetime,
+) -> int:
     if delay <= 0 or not last_growth_at:
         return 0
     try:
@@ -523,6 +533,14 @@ class MemoryCompiler:
             if degree <= 0:
                 continue
             failed_attempts = int(r["failed_growth_attempts"] or 0)
+            if failed_attempts == 0:
+                success_remaining = _growth_cooldown_remaining_seconds(
+                    r["last_growth_at"],
+                    GROWTH_SUCCESS_COOLDOWN_SECONDS,
+                    now=now,
+                )
+                if success_remaining > 0:
+                    continue
             retry_remaining = _growth_retry_remaining_seconds(
                 r["last_growth_at"],
                 failed_attempts,
@@ -534,10 +552,9 @@ class MemoryCompiler:
             knowledge_gap = 1.0 / (1.0 + degree)
             recurrence = min(1.0, math.log1p(mentions) / math.log(8))
             status_bonus = 0.35 if r['status'] != 'GROUNDED' else 0.0
-            cooldown = 0.50 if r['last_growth_at'] else 1.0
             # Single common tokens are noisier than compact multiword concepts.
             phrase_bonus = 0.12 if len(label.split()) >= 2 else 0.0
-            score = (knowledge_gap * 0.48 + recurrence * 0.36 + status_bonus + phrase_bonus) * cooldown
+            score = knowledge_gap * 0.48 + recurrence * 0.36 + status_bonus + phrase_bonus
             if mentions < 2 and degree == 0:
                 score *= 0.45
             d = dict(r)

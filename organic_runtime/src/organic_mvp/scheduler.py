@@ -575,16 +575,18 @@ class OrganicEngine:
                          f'sources={len(docs)} query={query}'))
         delta_degree = after_degree - before_degree
         delta_claims = after_claims - before_claims
-        reward = 1.0 if delta_degree > 0 else (0.45 if docs and delta_claims > 0 else -0.35)
+        growth_succeeded = bool(docs and (delta_degree > 0 or delta_claims > 0))
+        reward = 1.0 if delta_degree > 0 else (0.45 if growth_succeeded else -0.35)
         self.core.learn_growth_outcome(tid, selection_trace, reward, 'growth_cycle_result',
                                        {'sources': len(docs), 'delta_degree': delta_degree, 'delta_claims': delta_claims})
         self.db.add_task_event(tid, 'CORE_LEARNING', 'Updated curiosity/growth policy from growth outcome.',
                                {'reward': reward, 'delta_degree': delta_degree, 'delta_claims': delta_claims})
-        msg = f"Autonomous growth for '{concept['label']}' used {len(docs)} source(s). Graph degree {before_degree} -> {after_degree}. Query: {query}"
-        if not docs:
-            msg += ' Empty evidence result entered per-concept retry cooldown.'
-        self._complete_task(tid, msg, status='COMPLETED' if docs else 'PARTIAL')
-        if not docs:
+        msg = (f"Autonomous growth for '{concept['label']}' used {len(docs)} source(s). "
+               f"Graph degree {before_degree} -> {after_degree}; claims +{delta_claims}. Query: {query}")
+        if not growth_succeeded:
+            msg += ' No durable memory growth; per-concept retry cooldown applied.'
+        self._complete_task(tid, msg, status='COMPLETED' if growth_succeeded else 'PARTIAL')
+        if not growth_succeeded:
             self.db.add_task_event(
                 tid,
                 'GROWTH_RETRY_COOLDOWN',

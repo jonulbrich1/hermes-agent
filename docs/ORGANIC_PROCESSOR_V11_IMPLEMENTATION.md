@@ -99,7 +99,7 @@ presenter are instructed to preserve that packet and not recompute its result.
 Validated during integration:
 
 ```text
-80 passed - Organic runtime, processor, Hermes plugin, and dashboard suites
+81 passed - Organic runtime, processor, Hermes plugin, and dashboard suites
 6 passed  - original V11 handoff package tests
 Ruff       - changed Python files passed focused checks
 ```
