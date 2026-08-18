@@ -531,11 +531,25 @@ class MemoryDB:
         return self.one('SELECT * FROM concepts WHERE normalized=?', (normalized,))
 
     def list_frontier_candidates(self, limit: int = 200):
-        # Degree and mention count are returned so the cognition layer can score gaps.
+        # Growth attempts include partial/failed runs so empty searches cannot be retried in a hot loop.
         return self.query(
             '''SELECT c.*, 
                 (SELECT COUNT(*) FROM relations r WHERE r.subject_id=c.concept_id OR r.object_id=c.concept_id) AS degree,
-                (SELECT MAX(completed_at) FROM tasks t WHERE t.target_concept_id=c.concept_id AND t.status='COMPLETED') AS last_growth_at
+                (SELECT MAX(completed_at) FROM tasks t
+                 WHERE t.target_concept_id=c.concept_id
+                   AND t.kind IN ('IDLE_GROWTH','PRECREATED_GROWTH')
+                   AND t.status IN ('COMPLETED','PARTIAL','FAILED')) AS last_growth_at,
+                (SELECT COUNT(*) FROM tasks t
+                 WHERE t.target_concept_id=c.concept_id
+                   AND t.kind IN ('IDLE_GROWTH','PRECREATED_GROWTH')
+                   AND t.status IN ('PARTIAL','FAILED')
+                   AND t.completed_at > COALESCE(
+                       (SELECT MAX(success.completed_at) FROM tasks success
+                        WHERE success.target_concept_id=c.concept_id
+                          AND success.kind IN ('IDLE_GROWTH','PRECREATED_GROWTH')
+                          AND success.status='COMPLETED'),
+                       ''
+                   )) AS failed_growth_attempts
                FROM concepts c
                WHERE c.mention_count > 0
                ORDER BY c.last_seen_at DESC

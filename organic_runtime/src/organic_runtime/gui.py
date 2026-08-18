@@ -480,6 +480,36 @@ HTML = r"""<!doctype html>
       }).join("");
     }
 
+    function compactRecentTasks(rows) {
+      const compacted = [];
+      const seen = new Map();
+      (rows || []).forEach((row) => {
+        const growth = String(row.kind || "").includes("GROWTH");
+        const key = growth ? `growth:${row.goal || ""}` : `task:${row.task_id || ""}`;
+        if (seen.has(key)) {
+          seen.get(key).repeat_count += 1;
+          return;
+        }
+        const copy = { ...row, repeat_count: 1 };
+        seen.set(key, copy);
+        compacted.push(copy);
+      });
+      return compacted;
+    }
+
+    function renderTasks(rows) {
+      const compacted = compactRecentTasks(rows);
+      const node = $("tasks");
+      if (!compacted.length) {
+        node.innerHTML = `<div class="subtle">None</div>`;
+        return;
+      }
+      node.innerHTML = compacted.slice(0, 20).map((row) => {
+        const repeats = row.repeat_count > 1 ? ` | ${row.repeat_count} recorded runs` : "";
+        return `<div class="item"><div class="item-title">${escapeHtml(row.goal || row.task_id || "")}</div><div class="subtle">${escapeHtml((row.status || "") + repeats)}</div></div>`;
+      }).join("");
+    }
+
     function renderTools(rows) {
       const node = $("tools");
       if (!rows || !rows.length) {
@@ -500,7 +530,7 @@ HTML = r"""<!doctype html>
       const sources = await api("/api/sources?limit=20");
       const tools = await api("/api/tools");
       const packages = await api("/api/packages?limit=10");
-      renderList("tasks", tasks.tasks || [], "goal", "status");
+      renderTasks(tasks.tasks || []);
       renderList("sources", sources.sources || [], "title", "url");
       renderTools([...(tools.tools || []), ...(tools.mvp_tools || [])]);
       renderList("packages", packages.packages || [], "name", "path");

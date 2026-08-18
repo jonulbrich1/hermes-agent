@@ -137,6 +137,19 @@ def _format_boolean_entailment(task: StructuralTask, answer: bool) -> str:
     return "Yes. The conclusion holds in every allowed assignment of the unknown values."
 
 
+def _format_truth_lie_question(answer: Any) -> str:
+    if not isinstance(answer, dict) or answer.get("follow") != "take_indicated_road":
+        return ""
+    question = str(answer.get("question") or "").strip()
+    if not question:
+        return ""
+    return (
+        f'Ask: "{question}" Then take the road they indicate. A resident of the City of Truth '
+        "truthfully points to that city. A resident of the City of Lies must lie about the road "
+        "to their own city, so they also point to the City of Truth."
+    )
+
+
 class MvpOrganicSystem:
     """Shared bridge from the scaffold contracts into the hardened MVP modules."""
 
@@ -1260,6 +1273,8 @@ class MvpOrganicSystem:
             answer = ", ".join(str(item) for item in (answer_value or []))
         elif accepted and structural_task and structural_task.goal == "prove_existential_relation":
             answer = _format_boolean_entailment(structural_task, bool(answer_value))
+        elif accepted and structural_task and structural_task.goal == "identify_truth_road":
+            answer = _format_truth_lie_question(answer_value)
         elif accepted and structural_task and structural_task.goal == "solve_linear_target":
             result = answer_value if isinstance(answer_value, dict) else {}
             values = result.get("values") if isinstance(result.get("values"), dict) else {}

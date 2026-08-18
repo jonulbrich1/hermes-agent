@@ -2,7 +2,7 @@
 
 ## Status
 
-Organic Processor `0.11.0-rc1` is integrated into the existing Hermes/Organic
+Organic Processor `0.11.0-rc2` is integrated into the existing Hermes/Organic
 pipeline. It upgrades the processor boundary without replacing the Interaction
 Gate, Cognition/Active Weave, Living Memory, graph growth, Evidence Broker,
 Memory Compiler, independent verifier, MCP server, or Hermes presenter.
@@ -13,7 +13,7 @@ Memory Compiler, independent verifier, MCP server, or Hermes presenter.
 Hermes configured model
   -> Interaction Gate
   -> Organic Cognition / Active Weave
-  -> Organic Processor 0.11.0-rc1
+  -> Organic Processor 0.11.0-rc2
        -> immutable V7 seed ranking
        -> recoverable runtime learning overlay
        -> optional V9 bounded-thought action ranking
@@ -79,12 +79,25 @@ For an unverified result, `verified=false`, `answer=null`, and the packet carrie
 `presenter_must_not_invent_an_answer`. Hermes and the optional dedicated semantic
 presenter are instructed to preserve that packet and not recompute its result.
 
+## RC2 Reliability Fixes
+
+- Truth/lie navigation puzzles compile into task-local responder cases and use
+  `ENUMERATE_CASES -> TEST_ENTAILMENT -> VERIFY_ALL_CASES -> STOP_IF_VERIFIED`.
+  The independent verifier simulates both possible responder types before the
+  Semantic Interface may present the question.
+- Idle growth searches use the selected concept label rather than scheduler
+  instruction text.
+- Empty evidence runs receive per-concept exponential retry cooldown, preventing
+  one unresolved topic from monopolizing the autonomous growth frontier.
+- Generic instruction vocabulary is excluded from frontier topics, and repeated
+  historical growth rows are collapsed in the GUI without deleting audit data.
+
 ## Validation
 
 Validated during integration:
 
 ```text
-72 passed - Organic runtime, processor, Hermes plugin, and dashboard suites
+76 passed - Organic runtime, processor, Hermes plugin, and dashboard suites
 6 passed  - original V11 handoff package tests
 Ruff       - changed Python files passed focused checks
 ```

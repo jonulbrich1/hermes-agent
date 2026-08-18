@@ -40,6 +40,14 @@ SEED_PATHWAYS: dict[str, dict[str, list[str]]] = {
     "grounded_evidence_selection": {
         "GROUNDED_THRESHOLD_SELECTION": ["SELECT_GROUNDED_CANDIDATES"],
     },
+    "truth_lie_navigation": {
+        "BOUNDED_TRUTH_LIE_CASE_ANALYSIS": [
+            "ENUMERATE_CASES",
+            "TEST_ENTAILMENT",
+            "VERIFY_ALL_CASES",
+            "STOP_IF_VERIFIED",
+        ],
+    },
 }
 
 INITIAL_EDGE_WEIGHTS = {
@@ -60,7 +68,7 @@ class OrganicProcessor:
     """Bounded adaptive structural processor with no external-resource access."""
 
     mode = "bounded_structural_processor"
-    version = "0.11.0-rc1"
+    version = "0.11.0-rc2"
 
     def __init__(
         self,
@@ -161,12 +169,14 @@ class OrganicProcessor:
             "symbolic_linear_constraints": "linear_constraints",
             "boolean_case_analysis": "case_logic",
             "bounded_arithmetic": "scalar",
+            "truth_lie_navigation": "case_logic",
         }
         domain_by_family = {
             "symbolic_linear_constraints": "linear_direct",
             "boolean_case_analysis": "boolean_entailment",
             "bounded_arithmetic": "arithmetic",
             "partial_order": "topological",
+            "truth_lie_navigation": "boolean_entailment",
         }
         family = family_aliases.get(task.family, task.family)
         features = {f"family:{family}", f"objective:{task.goal}"}
@@ -234,6 +244,7 @@ class OrganicProcessor:
             "order_cardinality": "min_distinct_count",
             "bounded_arithmetic": "evaluate_expression",
             "grounded_evidence_selection": "select_supported_items",
+            "truth_lie_navigation": "identify_truth_road",
         }.get(task.family)
         paths = dict(SEED_PATHWAYS.get(task.family, {})) if expected_goal == task.goal else {}
         learned_store = self.state.get("learned_pathways", {})

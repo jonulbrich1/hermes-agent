@@ -144,6 +144,50 @@ def _expected_boolean_entailment(task: StructuralTask) -> tuple[bool | None, int
     return bool(outcomes) and all(outcomes), len(outcomes)
 
 
+def _expected_truth_lie_question(task: StructuralTask) -> tuple[dict[str, str] | None, int]:
+    destinations = next(
+        (item for item in task.constraints if item.get("kind") == "binary_destination"),
+        None,
+    )
+    unknown = next(
+        (item for item in task.constraints if item.get("kind") == "unknown_responder_home"),
+        None,
+    )
+    rules = {
+        str(item.get("home") or ""): item.get("truthful")
+        for item in task.constraints
+        if item.get("kind") == "responder_rule"
+    }
+    if not destinations or not unknown:
+        return None, 0
+    target = str(destinations.get("target") or "").strip()
+    alternative = str(destinations.get("alternative") or "").strip()
+    options = [str(item).strip() for item in (unknown.get("options") or [])]
+    if (
+        not target
+        or not alternative
+        or target == alternative
+        or set(options) != {target, alternative}
+        or rules.get(target) is not True
+        or rules.get(alternative) is not False
+    ):
+        return None, 0
+    outcomes = []
+    for home in options:
+        indicated = home if rules[home] is True else (alternative if home == target else target)
+        outcomes.append(indicated == target)
+    if not outcomes or not all(outcomes):
+        return None, len(outcomes)
+    return (
+        {
+            "question_id": "ask_home_road",
+            "question": "Which road leads to the city where you live?",
+            "follow": "take_indicated_road",
+        },
+        len(outcomes),
+    )
+
+
 def _independent_linear_result(task: StructuralTask) -> dict[str, Any] | None:
     """Solve again outside processor operators and verify every original equation."""
     if any(
@@ -374,6 +418,35 @@ def verify_trace(task: StructuralTask, trace: ProcessTrace) -> TraceVerification
             reward=1.0 if matches else -0.65,
             result_code=(
                 "verified_boolean_entailment" if matches else "rejected_boolean_entailment"
+            ),
+            checks=checks,
+            expected=expected,
+        )
+
+    if task.goal == "identify_truth_road" and kinds <= {
+        "binary_destination",
+        "responder_rule",
+        "unknown_responder_home",
+    }:
+        expected, case_count = _expected_truth_lie_question(task)
+        shaped = (
+            isinstance(trace.answer, dict)
+            and isinstance(trace.answer.get("question"), str)
+            and bool(trace.answer.get("question"))
+            and trace.answer.get("follow") == "take_indicated_road"
+        )
+        matches = shaped and expected is not None and trace.answer == expected
+        checks = {
+            "answer_contains_actionable_question": shaped,
+            "both_responder_types_evaluated": case_count == 2,
+            "indicated_road_is_truth_in_all_cases": bool(matches),
+            "external_resources_used": False,
+        }
+        return TraceVerification(
+            accepted=bool(matches),
+            reward=1.0 if matches else -0.65,
+            result_code=(
+                "verified_truth_lie_navigation" if matches else "rejected_truth_lie_question"
             ),
             checks=checks,
             expected=expected,

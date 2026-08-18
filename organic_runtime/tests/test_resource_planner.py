@@ -1,3 +1,4 @@
+from organic_runtime.cognition.structural import infer_structural_fields
 from organic_runtime.contracts import (
     CognitiveResource,
     GateDecision,
@@ -7,7 +8,6 @@ from organic_runtime.contracts import (
     WorldMode,
 )
 from organic_runtime.planning.resource_planner import CognitiveResourcePlanner
-from organic_runtime.cognition.structural import infer_structural_fields
 from organic_runtime.semantic.pydantic_ai_adapter import PydanticAISemanticInterface
 
 
@@ -128,6 +128,28 @@ def test_structural_compiler_preserves_unknown_as_case_analysis_variable():
         if item.get("kind") == "entity_property" and item.get("entity") == "Anne"
     )
     assert anne["value"] is None
+
+
+def test_structural_compiler_builds_truth_lie_cases_without_embedding_answer():
+    structural = infer_structural_fields(
+        "Logic Puzzle: You're at a fork in the road. One direction leads to the City of Lies, "
+        "where everyone always lies, and the other to the City of Truth, where everyone always "
+        "tells the truth. What question could you ask to find the road to the City of Truth?"
+    )
+
+    assert structural is not None
+    assert structural["reasoning_family"] == "truth_lie_navigation"
+    assert structural["reasoning_goal"] == "identify_truth_road"
+    assert structural["required_operations"] == [
+        "ENUMERATE_CASES",
+        "TEST_ENTAILMENT",
+        "VERIFY_ALL_CASES",
+        "STOP_IF_VERIFIED",
+    ]
+    assert all(
+        "question" not in item and "answer" not in item
+        for item in structural["structural_constraints"]
+    )
 
 
 def test_structural_compiler_builds_transitive_order_premises_without_answer():

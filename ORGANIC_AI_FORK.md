@@ -73,7 +73,7 @@ only a verified pathway. Idle time retries pending processor growth before the
 Executive selects the next graph-growth task. The Hermes model can propose structure but
 cannot generate executable operators, assign rewards, or approve a pathway.
 
-Organic Processor `0.11.0-rc1` loads the accepted V7 policy as an immutable base:
+Organic Processor `0.11.0-rc2` loads the accepted V7 policy as an immutable base:
 930,838 verifier-scored experiences and 40 learned primitive names. Runtime
 learning remains a separate recoverable overlay. The seed is deliberately not a
 catalog of solved task-family procedures. A model or learned policy may rank a
@@ -81,6 +81,12 @@ required operation, but Organic executes it only when a bounded deterministic
 handler exists. Otherwise the task remains visible as `WAITING_FOR_PRIMITIVE`.
 Successful primitive compositions are independently verified and learned as
 reusable pathways.
+
+RC2 adds independently verified truth/lie case analysis for self-contained
+navigation puzzles. Autonomous graph growth now searches using the selected
+concept label, applies exponential cooldown after empty evidence runs, excludes
+generic instruction vocabulary from the frontier, and collapses duplicate task
+rows in the GUI while retaining the complete audit history.
 
 The optional V9 thought controller runs in shadow mode by default. It can rank
 only programmatically authorized typed actions and has no direct graph, web,

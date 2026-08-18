@@ -514,7 +514,7 @@ class OrganicEngine:
         before_claims = self.db.counts()['claims']
         known = [dict(r) for r in self.db.related_claims_for_concept(target_id, limit=10)]
         context = [r.get('text','') for r in known]
-        query = self.core.generate_query(task['goal'], context)
+        query = self.core.generate_query(concept['label'], context)
         if self._higher_priority_pending(int(task['priority'])):
             self.db.update_task(tid, status='PENDING')
             self.db.add_task_event(tid, 'PREEMPTED', 'Higher-priority user work arrived before external search.')
@@ -534,7 +534,22 @@ class OrganicEngine:
         self.db.add_task_event(tid, 'CORE_LEARNING', 'Updated curiosity/growth policy from growth outcome.',
                                {'reward': reward, 'delta_degree': delta_degree, 'delta_claims': delta_claims})
         msg = f"Autonomous growth for '{concept['label']}' used {len(docs)} source(s). Graph degree {before_degree} -> {after_degree}. Query: {query}"
+        if not docs:
+            msg += ' Empty evidence result entered per-concept retry cooldown.'
         self._complete_task(tid, msg, status='COMPLETED' if docs else 'PARTIAL')
+        if not docs:
+            self.db.add_task_event(
+                tid,
+                'GROWTH_RETRY_COOLDOWN',
+                'Suppressed immediate reselection after an empty external-evidence run.',
+                {'target_concept_id': target_id, 'query': query},
+            )
+            self.audit.write(
+                'growth_retry_cooldown',
+                task_id=tid,
+                target_concept_id=target_id,
+                query=query,
+            )
         with self._state_lock:
             self._completed_idle_cycles += 1
             idle_count = self._completed_idle_cycles

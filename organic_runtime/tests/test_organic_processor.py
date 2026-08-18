@@ -76,6 +76,32 @@ def _unknown_boolean_task() -> StructuralTask:
     )
 
 
+def _truth_lie_task() -> StructuralTask:
+    return StructuralTask(
+        family="truth_lie_navigation",
+        goal="identify_truth_road",
+        constraints=(
+            {
+                "kind": "binary_destination",
+                "target": "City of Truth",
+                "alternative": "City of Lies",
+            },
+            {"kind": "responder_rule", "home": "City of Truth", "truthful": True},
+            {"kind": "responder_rule", "home": "City of Lies", "truthful": False},
+            {
+                "kind": "unknown_responder_home",
+                "options": ["City of Truth", "City of Lies"],
+            },
+        ),
+        required_operations=(
+            "ENUMERATE_CASES",
+            "TEST_ENTAILMENT",
+            "VERIFY_ALL_CASES",
+            "STOP_IF_VERIFIED",
+        ),
+    )
+
+
 def _linear_task(prefix: str = "") -> StructuralTask:
     head, body, tail = (f"{prefix}{name}" for name in ("head", "body", "tail"))
     return StructuralTask(
@@ -285,6 +311,22 @@ def test_unknown_value_is_enumerated_and_verified_in_every_case(tmp_path):
     assert verification.checks["all_unknown_assignments_evaluated"] is True
 
 
+def test_truth_lie_question_is_verified_for_both_responder_types(tmp_path):
+    processor = OrganicProcessor(tmp_path / "processor.json")
+    task = _truth_lie_task()
+    result = processor.process(task)
+    verification = verify_trace(task, result.trace)
+
+    assert result.answer == {
+        "question_id": "ask_home_road",
+        "question": "Which road leads to the city where you live?",
+        "follow": "take_indicated_road",
+    }
+    assert verification.accepted is True
+    assert verification.checks["both_responder_types_evaluated"] is True
+    assert verification.checks["indicated_road_is_truth_in_all_cases"] is True
+
+
 def test_semantic_finalizer_removes_model_answer_leakage():
     request = (
         "There are two ducks in front of a duck, two ducks behind a duck and a duck "
@@ -380,6 +422,40 @@ async def test_runtime_grows_pathways_for_ordering_and_unknown_case_analysis(tmp
         assert boolean.answer.startswith("Yes.")
         assert boolean.metadata["decision"]["result_code"] == "verified_boolean_entailment"
         assert runtime.core.system.processor.status()["learned_pathway_count"] == 2
+    finally:
+        runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_answers_truth_lie_navigation_without_memory_or_web(tmp_path):
+    settings = RuntimeSettings(
+        backend="mvp",
+        semantic_mode="heuristic",
+        mvp_data_dir=tmp_path / "mvp",
+        trace_dir=tmp_path / "traces",
+        idle_growth_enabled=False,
+        bootstrap_growth_enabled=False,
+    )
+    runtime = build_runtime(settings)
+    try:
+        response = await runtime.handle(
+            "Logic Puzzle: You're at a fork in the road. One direction leads to the City of "
+            "Lies, where everyone always lies, and the other to the City of Truth, where "
+            "everyone always tells the truth. A person at the fork lives in one of the cities. "
+            "What question could you ask to find which road leads to the City of Truth?"
+        )
+
+        assert response.answer.startswith('Ask: "Which road leads to the city where you live?"')
+        assert response.metadata["processor_capabilities"] == ["truth_lie_navigation"]
+        assert response.metadata["processor_operators"] == [
+            "ENUMERATE_CASES",
+            "TEST_ENTAILMENT",
+            "VERIFY_ALL_CASES",
+            "STOP_IF_VERIFIED",
+        ]
+        assert response.metadata["decision"]["result_code"] == "verified_truth_lie_navigation"
+        assert response.metadata["presenter_packet"]["verified"] is True
+        assert response.metadata["sources"] == []
     finally:
         runtime.close()
 

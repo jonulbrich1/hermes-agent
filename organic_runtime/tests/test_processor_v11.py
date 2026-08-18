@@ -70,7 +70,7 @@ def test_v7_seed_integrity_and_context_ranking() -> None:
 def test_v11_keeps_seed_separate_from_runtime_overlay(tmp_path) -> None:
     processor = OrganicProcessor(tmp_path / "processor.json")
     status = processor.status()
-    assert status["version"] == "0.11.0-rc1"
+    assert status["version"] == "0.11.0-rc2"
     assert status["v7_seed"]["loaded"] is True
     assert status["v7_seed"]["immutable_base"] is True
     assert status["seed_primitive_count"] == 40

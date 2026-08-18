@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from organic_mvp.memory import growth_retry_delay_seconds
+from organic_mvp.util import utcnow
 from organic_runtime.adapters.mvp import MvpOrganicSystem
 from organic_runtime.config import RuntimeSettings
 from organic_runtime.contracts import (
@@ -113,6 +115,118 @@ def test_mvp_backend_internet_access_is_enabled_in_auto_mode(tmp_path):
         assert status["mode"] == "auto"
         assert status["wikipedia_available_without_key"] is True
         assert status["direct_url_fetch"] is True
+    finally:
+        _close(runtime)
+
+
+def test_empty_growth_uses_entity_query_and_suppresses_immediate_retry(tmp_path, monkeypatch):
+    settings = RuntimeSettings(
+        semantic_mode="heuristic",
+        backend="mvp",
+        trace_dir=tmp_path / "traces",
+        mvp_data_dir=tmp_path / "mvp",
+        web_provider="auto",
+        idle_growth_enabled=False,
+        bootstrap_growth_enabled=False,
+    )
+    runtime = build_runtime(settings)
+    try:
+        system = runtime.growth.system
+        db = system.db
+        target_id = db.upsert_concept(
+            "concept:johan",
+            "Johan Fredrikzon",
+            "johan fredrikzon",
+            kind="ENTITY",
+            status="GROUNDED",
+            confidence=0.8,
+        )
+        neighbor_id = db.upsert_concept(
+            "concept:history",
+            "History of technology",
+            "history of technology",
+            kind="TOPIC",
+            status="GROUNDED",
+            confidence=0.8,
+        )
+        noise_id = db.upsert_concept(
+            "concept:research",
+            "research",
+            "research",
+            kind="CONCEPT",
+            status="GROUNDED",
+            confidence=0.8,
+        )
+        db.touch_concept(target_id, 2)
+        db.touch_concept(neighbor_id, 2)
+        db.touch_concept(noise_id, 2)
+        db.add_claim(
+            "claim:test-growth",
+            None,
+            "test",
+            0,
+            "Johan Fredrikzon studies the history of technology.",
+            "Johan Fredrikzon studies the history of technology.",
+            0.9,
+            "GROUNDED",
+        )
+        db.add_relation(
+            "relation:test-growth",
+            "claim:test-growth",
+            None,
+            target_id,
+            "studies",
+            neighbor_id,
+            None,
+            0.9,
+            "GROUNDED",
+        )
+        db.add_relation(
+            "relation:test-noise",
+            "claim:test-growth",
+            None,
+            noise_id,
+            "related_to",
+            neighbor_id,
+            None,
+            0.9,
+            "GROUNDED",
+        )
+        task_id = "task:idle:test-empty-growth"
+        db.create_task(
+            task_id,
+            "IDLE_GROWTH",
+            "COGNITION",
+            "Learn more about Johan Fredrikzon using external evidence, emphasizing what it is "
+            "and how it connects to existing memory.",
+            100,
+            status="ACTIVE",
+            target_concept_id=target_id,
+        )
+        db.update_task(task_id, started_at=utcnow(), attempts=1)
+        queries = []
+        monkeypatch.setattr(
+            system.broker,
+            "search",
+            lambda query, limit=5: queries.append((query, limit)) or [],
+        )
+
+        system.engine._process_growth_task(dict(db.task(task_id)))
+
+        saved = dict(db.task(task_id))
+        assert queries == [("johan fredrikzon", 4)]
+        assert saved["status"] == "PARTIAL"
+        assert "retry cooldown" in saved["result_text"]
+        assert growth_retry_delay_seconds(1) == 300
+        assert target_id not in {
+            item["concept_id"] for item in system.memory.frontier(limit=20)
+        }
+        assert neighbor_id in {
+            item["concept_id"] for item in system.memory.frontier(limit=20)
+        }
+        assert noise_id not in {
+            item["concept_id"] for item in system.memory.frontier(limit=20)
+        }
     finally:
         _close(runtime)
 
@@ -270,7 +384,7 @@ async def test_self_contained_duck_puzzle_uses_organic_processor_without_growth(
         assert response.metadata["sources"] == []
         assert response.metadata["semantic_completeness_complete"] is True
         assert response.metadata["reasoning_trace"]["model"]["minimal_model"] is True
-        assert response.metadata["processor_version"] == "0.11.0-rc1"
+        assert response.metadata["processor_version"] == "0.11.0-rc2"
         assert response.metadata["v7_seed"]["experience_count"] == 930_838
         assert response.metadata["presenter_packet"]["verified"] is True
         assert response.metadata["presenter_packet"]["answer"] == 3

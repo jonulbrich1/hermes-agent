@@ -178,6 +178,23 @@
     );
   }
 
+  function compactRecentTasks(rows) {
+    var compacted = [];
+    var seen = {};
+    (rows || []).forEach(function (row) {
+      var growth = String(row.kind || "").indexOf("GROWTH") !== -1;
+      var key = growth ? "growth:" + String(row.goal || "") : "task:" + String(row.task_id || "");
+      if (seen[key]) {
+        seen[key].repeat_count += 1;
+        return;
+      }
+      var copy = Object.assign({}, row, { repeat_count: 1 });
+      seen[key] = copy;
+      compacted.push(copy);
+    });
+    return compacted;
+  }
+
   function ToolsList(props) {
     var rows = props.rows || [];
     if (!rows.length) return h(Empty, null, "No tools");
@@ -467,7 +484,15 @@
       ),
       h("div", { className: "oa-tabbody" },
         tab === "overview" ? h("div", { className: "oa-grid two" },
-          h(Panel, { title: "Recent Tasks" }, h(ObjectList, { rows: tasks, label: "tasks", titleKey: "goal", subKey: "status" })),
+          h(Panel, { title: "Recent Tasks" }, h(ObjectList, {
+            rows: compactRecentTasks(tasks),
+            label: "tasks",
+            titleKey: "goal",
+            subKey: "status",
+            formatSub: function (row, sub) {
+              return String(sub || "") + (row.repeat_count > 1 ? " | " + row.repeat_count + " recorded runs" : "");
+            },
+          })),
           h(Panel, { title: "Rolling Cognition" },
             h(KeyValue, { label: "Active objective", value: rolling.active_objective }),
             h(KeyValue, { label: "Updated", value: rolling.updated_at }),

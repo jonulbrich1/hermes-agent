@@ -12,7 +12,6 @@ from organic_runtime.contracts import (
     IntentEnvelope,
 )
 
-
 _NUMBERS = {
     "zero": 0,
     "one": 1,
@@ -142,6 +141,53 @@ def _infer_boolean_case_analysis(text: str) -> dict[str, Any] | None:
     }
 
 
+def _infer_truth_lie_navigation(text: str) -> dict[str, Any] | None:
+    lowered = text.lower()
+    required_markers = (
+        "city of lies",
+        "city of truth",
+        "always lies",
+        "always tells the truth",
+    )
+    if not all(marker in lowered for marker in required_markers):
+        return None
+    if "road" not in lowered or not re.search(r"\b(?:ask|question)\b", lowered):
+        return None
+    return {
+        "closed_world": True,
+        "sufficient_premises": True,
+        "reasoning_family": "truth_lie_navigation",
+        "reasoning_goal": "identify_truth_road",
+        "required_operations": [
+            "ENUMERATE_CASES",
+            "TEST_ENTAILMENT",
+            "VERIFY_ALL_CASES",
+            "STOP_IF_VERIFIED",
+        ],
+        "structural_constraints": [
+            {
+                "kind": "binary_destination",
+                "target": "City of Truth",
+                "alternative": "City of Lies",
+            },
+            {
+                "kind": "responder_rule",
+                "home": "City of Truth",
+                "truthful": True,
+            },
+            {
+                "kind": "responder_rule",
+                "home": "City of Lies",
+                "truthful": False,
+            },
+            {
+                "kind": "unknown_responder_home",
+                "options": ["City of Truth", "City of Lies"],
+            },
+        ],
+    }
+
+
 def infer_structural_fields(request: str) -> dict[str, Any] | None:
     """Compile recognized task-local language without solving the task."""
     text = " ".join(request.strip().split())
@@ -149,6 +195,9 @@ def infer_structural_fields(request: str) -> dict[str, Any] | None:
     partial_order = _infer_partial_order(text)
     if partial_order:
         return partial_order
+    truth_lie = _infer_truth_lie_navigation(text)
+    if truth_lie:
+        return truth_lie
     boolean_case = _infer_boolean_case_analysis(text)
     if boolean_case:
         return boolean_case

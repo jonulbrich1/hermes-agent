@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections
+import datetime as dt
 import hashlib
 import logging
 import math
@@ -21,7 +22,6 @@ from .util import (
     stable_uid,
 )
 
-
 ALLOWED_GROWTH_KINDS = {
     "ENTITY",
     "CONCEPT",
@@ -32,16 +32,65 @@ ALLOWED_GROWTH_KINDS = {
 }
 
 HARD_REJECT_GROWTH_LABELS = {
+    "answer",
     "may",
     "one",
     "two",
     "part",
     "according",
+    "critical",
+    "current",
+    "details",
+    "evidence",
+    "existing",
+    "external",
+    "false",
     "including",
+    "information",
+    "important",
+    "press",
+    "question",
+    "research",
+    "result",
     "since",
     "even though",
     "new",
+    "true",
+    "using",
 }
+
+GROWTH_FAILURE_BACKOFF_BASE_SECONDS = 5 * 60
+GROWTH_FAILURE_BACKOFF_MAX_SECONDS = 6 * 60 * 60
+
+
+def growth_retry_delay_seconds(failed_attempts: int) -> int:
+    failures = max(0, int(failed_attempts))
+    if failures <= 0:
+        return 0
+    exponent = min(failures - 1, 12)
+    return min(
+        GROWTH_FAILURE_BACKOFF_MAX_SECONDS,
+        GROWTH_FAILURE_BACKOFF_BASE_SECONDS * (2**exponent),
+    )
+
+
+def _growth_retry_remaining_seconds(
+    last_growth_at: str | None,
+    failed_attempts: int,
+    *,
+    now: dt.datetime,
+) -> int:
+    delay = growth_retry_delay_seconds(failed_attempts)
+    if delay <= 0 or not last_growth_at:
+        return 0
+    try:
+        attempted_at = dt.datetime.fromisoformat(str(last_growth_at).replace("Z", "+00:00"))
+    except ValueError:
+        return delay
+    if attempted_at.tzinfo is None:
+        attempted_at = attempted_at.replace(tzinfo=dt.timezone.utc)
+    elapsed = max(0.0, (now - attempted_at.astimezone(dt.timezone.utc)).total_seconds())
+    return max(0, math.ceil(delay - elapsed))
 
 
 @dataclass
@@ -419,6 +468,7 @@ class MemoryCompiler:
     def frontier(self, limit: int = 25) -> list[dict]:
         rows = self.db.list_frontier_candidates(limit=500)
         scored = []
+        now = dt.datetime.now(dt.timezone.utc)
         for r in rows:
             label = r['label']
             normalized = normalize_label(label)
@@ -430,6 +480,14 @@ class MemoryCompiler:
             if kind not in ALLOWED_GROWTH_KINDS:
                 continue
             if degree <= 0:
+                continue
+            failed_attempts = int(r["failed_growth_attempts"] or 0)
+            retry_remaining = _growth_retry_remaining_seconds(
+                r["last_growth_at"],
+                failed_attempts,
+                now=now,
+            )
+            if retry_remaining > 0:
                 continue
             # Frontier interest favors concepts that recur but have little graph structure.
             knowledge_gap = 1.0 / (1.0 + degree)
@@ -444,6 +502,8 @@ class MemoryCompiler:
             d = dict(r)
             d['kind'] = kind
             d['frontier_score'] = round(score, 4)
+            d['growth_retry_failures'] = failed_attempts
+            d['growth_retry_remaining_seconds'] = retry_remaining
             scored.append(d)
         scored.sort(key=lambda x: (x['frontier_score'], x['mention_count']), reverse=True)
         return scored[:limit]

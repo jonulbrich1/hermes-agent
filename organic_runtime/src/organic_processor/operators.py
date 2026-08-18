@@ -244,19 +244,103 @@ def topological_order(state: dict[str, Any], task: StructuralTask) -> dict[str, 
     return {**ordered, "verified": bool(ordered.get("order_valid"))}
 
 
+def _enumerate_truth_lie_cases(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    destinations = next(
+        (item for item in task.constraints if item.get("kind") == "binary_destination"),
+        None,
+    )
+    unknown = next(
+        (item for item in task.constraints if item.get("kind") == "unknown_responder_home"),
+        None,
+    )
+    rules = {
+        str(item.get("home") or ""): item.get("truthful")
+        for item in task.constraints
+        if item.get("kind") == "responder_rule"
+    }
+    if not destinations or not unknown:
+        raise OperatorError("Truth/lie navigation premises are incomplete")
+    target = str(destinations.get("target") or "").strip()
+    alternative = str(destinations.get("alternative") or "").strip()
+    options = [str(item).strip() for item in (unknown.get("options") or [])]
+    if (
+        not target
+        or not alternative
+        or target == alternative
+        or set(options) != {target, alternative}
+        or rules.get(target) is not True
+        or rules.get(alternative) is not False
+    ):
+        raise OperatorError("Truth/lie navigation premises are inconsistent")
+    return {
+        **state,
+        "assignments": [
+            {"responder_home": home, "truthful": bool(rules[home])} for home in options
+        ],
+        "target_destination": target,
+        "alternative_destination": alternative,
+        "question_candidates": [
+            {
+                "question_id": "ask_home_road",
+                "question": "Which road leads to the city where you live?",
+                "follow": "take_indicated_road",
+            }
+        ],
+    }
+
+
+def _evaluate_truth_lie_questions(state: dict[str, Any]) -> dict[str, Any]:
+    target = str(state.get("target_destination") or "")
+    alternative = str(state.get("alternative_destination") or "")
+    assignments = state.get("assignments") or []
+    candidates = state.get("question_candidates") or []
+    if not target or not alternative or len(assignments) != 2 or not candidates:
+        raise OperatorError("Truth/lie cases were not enumerated")
+    for candidate in candidates:
+        if candidate.get("question_id") != "ask_home_road":
+            continue
+        case_results = []
+        for assignment in assignments:
+            home = str(assignment.get("responder_home") or "")
+            truthful = bool(assignment.get("truthful"))
+            indicated = home if truthful else (alternative if home == target else target)
+            case_results.append(
+                {
+                    "responder_home": home,
+                    "truthful": truthful,
+                    "indicated_destination": indicated,
+                    "satisfied": indicated == target,
+                }
+            )
+        if case_results and all(item["satisfied"] for item in case_results):
+            return {
+                **state,
+                "question": dict(candidate),
+                "case_results": case_results,
+                "entailed": True,
+                "entailment_valid": True,
+            }
+    return {**state, "case_results": [], "entailed": False, "entailment_valid": True}
+
+
 def enumerate_cases(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    if task.goal == "identify_truth_road":
+        return _enumerate_truth_lie_cases(state, task)
     return enumerate_unknown_assignments(state, task)
 
 
 def test_entailment(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
+    if task.goal == "identify_truth_road":
+        return _evaluate_truth_lie_questions(state)
     return evaluate_existential_relation(state, task)
 
 
 def verify_all_cases(state: dict[str, Any], task: StructuralTask) -> dict[str, Any]:
-    del task
     cases = state.get("case_results")
     if not isinstance(cases, list) or not cases or "entailed" not in state:
         raise OperatorError("Case verification requires evaluated bounded cases")
+    if task.goal == "identify_truth_road" and not state.get("entailed"):
+        raise OperatorError("No question identifies the target road in every responder case")
     return {**state, "verified": True, "entailment_valid": True}
 
 
@@ -271,6 +355,8 @@ def stop_if_verified(state: dict[str, Any], task: StructuralTask) -> dict[str, A
         }
     elif isinstance(state.get("ordered"), list):
         answer = list(state["ordered"])
+    elif isinstance(state.get("question"), dict):
+        answer = dict(state["question"])
     elif "entailed" in state:
         answer = bool(state["entailed"])
     else:
