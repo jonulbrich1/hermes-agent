@@ -1,0 +1,7 @@
+SOURCE_TITLE: Elementary Botany - root hairs excerpt
+AUTHOR: George Francis Atkinson
+SOURCE_URL: https://www.gutenberg.org/ebooks/64601
+LICENSE_STATUS: Public domain in the USA (Project Gutenberg)
+ROLE: Searchable textbook evidence; raw unstructured prose
+
+Absorption by root hairs.—If we examine seedlings, which have been grown in a germinator or in the folds of paper or cloths so that the roots will be free from particles of soil, we see near the growing point of the roots that the surface is covered with numerous slender, delicate, thread-like bodies, the root hairs. The root hairs are formed by the elongation of certain of the surface cells of the root. As the cell-sap of the root hairs draws on the moisture film with which they are in contact, the tension of this film is sufficient to draw moisture from distant particles. In this way the roots are supplied with water in soil which is only moist.

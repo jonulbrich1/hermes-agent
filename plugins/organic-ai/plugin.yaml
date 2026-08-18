@@ -1,0 +1,37 @@
+name: organic-ai
+version: 0.5.3
+manifest_version: 2
+api_version: 1
+license: MIT
+description: Organic AI cognitive runtime, Interaction Gate, Living Memory and growth tooling.
+tags: [organic-ai, cognition, memory, middleware, research]
+provides_tools:
+  - organic_get_state
+  - organic_memory_search
+  - organic_reason
+  - organic_research
+  - organic_submit_evidence
+  - organic_validate_claim
+  - organic_growth_frontier
+  - organic_growth_cycle
+  - organic_export_review
+provides_hooks:
+  - on_session_start
+  - on_session_end
+config_schema:
+  review_dir:
+    type: str
+    default: ""
+    description: Review directory. Defaults to ORGANIC_PROJECT_ROOT/reveiw.
+  mvp_data_dir:
+    type: str
+    default: ""
+    description: Integrated MVP runtime data directory. Defaults to ORGANIC_HOME/mvp.
+  semantic_model:
+    type: str
+    default: "inherit"
+    description: Use inherit for Hermes-native tool translation, or select an optional dedicated semantic model.
+  core_module:
+    type: str
+    default: "organic_core"
+    description: Python module that implements the bounded Organic Processing Core adapter.

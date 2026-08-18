@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -3067,6 +3068,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             function_args = _tool_request_mw.payload
             _tool_middleware_trace = _tool_request_mw.trace
     except Exception as _mw_err:
+        if os.environ.get("ORGANIC_HERMES_MODE", "0").strip().lower() in {
+            "1", "true", "yes", "on"
+        }:
+            raise RuntimeError(
+                "Organic tool authorization failed closed before execution."
+            ) from _mw_err
         logger.debug("tool_request middleware error: %s", _mw_err)
 
     # Check plugin hooks for a block or approval directive before executing.

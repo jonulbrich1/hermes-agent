@@ -1,0 +1,9 @@
+SOURCE_TITLE: A practical course in botany
+AUTHOR: Eliza Frances Andrews
+SOURCE_URL: https://www.gutenberg.org/ebooks/78430
+LICENSE_STATUS: Public domain in the USA (Project Gutenberg)
+ROLE: Initial unstructured textbook input
+
+Photosynthesis.—In our examination of the internal structure of the leaf, the chlorophyll bodies were found to contain small granules of starch which the chlorophyll, under the stimulus of light, had elaborated as a nutriment for the plant tissues.
+
+Hence, the leaf may be regarded as a factory in which vegetable food, mainly starch, is manufactured out of the water brought up from the soil, and the carbon dioxide derived through the stomata from the atmosphere. In carrying on the operation of photosynthesis, sunshine is the power, the chlorophyll bodies the working machinery, carbon dioxide and water the raw materials, and starch or oil the finished product, while oxygen and the water of transpiration represent the waste or by-products.

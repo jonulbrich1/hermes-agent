@@ -1,0 +1,7 @@
+SOURCE_TITLE: A Civic Biology
+AUTHOR: George William Hunter
+SOURCE_URL: https://www.gutenberg.org/ebooks/39969
+LICENSE_STATUS: Public domain in the USA (Project Gutenberg)
+ROLE: Cached web stand-in; not ingested until the active learner requests it
+
+The carbon dioxide is taken in through the stomata and reaches the green cells by way of the intercellular spaces and by osmosis from cell to cell. Water reaches the green cells through the veins. This building up of food and the release of oxygen by the plant in the presence of sunlight is called photosynthesis.

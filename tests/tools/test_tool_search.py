@@ -80,6 +80,15 @@ class TestClassification:
                 f"Core tool '{core_name}' must NEVER be deferrable"
             )
 
+    def test_request_controlling_organic_tools_never_defer(self):
+        from toolsets import _ALWAYS_VISIBLE_PLUGIN_TOOLS, _HERMES_CORE_TOOLS
+        from tools.tool_search import is_deferrable_tool_name
+
+        assert "organic_reason" in _ALWAYS_VISIBLE_PLUGIN_TOOLS
+        assert "organic_reason" not in _HERMES_CORE_TOOLS
+        assert not is_deferrable_tool_name("organic_reason")
+        assert not is_deferrable_tool_name("organic_get_state")
+
     def test_bridge_tools_never_defer(self):
         from tools.tool_search import is_deferrable_tool_name, BRIDGE_TOOL_NAMES
         for name in BRIDGE_TOOL_NAMES:

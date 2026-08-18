@@ -73,6 +73,7 @@ from agent.model_metadata import (
     is_output_cap_error,
     parse_available_output_tokens_from_error,
     save_context_length,
+    required_minimum_context_length,
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import (
@@ -164,6 +165,35 @@ _HANDOFF_SKIP_FINAL_RESPONSE = (
     "Context was compacted. The previous response is complete — "
     "awaiting your next message."
 )
+
+
+def _authoritative_tool_return_answer(messages: List[Dict[str, Any]]) -> str:
+    """Read a trusted return-direct envelope from the latest tool batch."""
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            break
+        tool_name = str(message.get("name") or "")
+        if not tool_name.startswith("organic_"):
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            continue
+        control = payload.get("_hermes_control") if isinstance(payload, dict) else None
+        if not isinstance(control, dict):
+            continue
+        answer = str(control.get("answer") or "").strip()
+        if (
+            control.get("source") == "organic-ai"
+            and control.get("return_direct") is True
+            and control.get("authoritative") is True
+            and answer
+        ):
+            return answer
+    return ""
 
 
 # Stable prefix of the local interrupt status string emitted when a turn is
@@ -426,7 +456,8 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
     if not isinstance(runtime_ctx, int) or runtime_ctx <= 0:
         return None
-    if runtime_ctx >= MINIMUM_CONTEXT_LENGTH:
+    required_context = required_minimum_context_length()
+    if runtime_ctx >= required_context:
         return None
 
     model = getattr(agent, "model", "") or "the selected model"
@@ -443,7 +474,7 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
         provider,
         base_url,
         runtime_ctx,
-        MINIMUM_CONTEXT_LENGTH,
+        required_context,
         request_tokens,
         tool_count,
         getattr(agent, "session_id", None) or "none",
@@ -451,12 +482,12 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
 
     return (
         f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime "
-        f"context, but Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
+        f"context, but this Hermes role needs at least {required_context:,} tokens "
         "for reliable tool use.\n\n"
         "Increase the Ollama context for this model and restart/reload the "
-        "model before trying again. A known-good starting point is 65,536 "
-        "tokens. In Hermes config, set `model.ollama_num_ctx: 65536` "
-        "(and `model.context_length: 65536` if you also override the displayed "
+        f"model before trying again. A known-good starting point is {required_context:,} "
+        f"tokens. In Hermes config, set `model.ollama_num_ctx: {required_context}` "
+        f"(and `model.context_length: {required_context}` if you also override the displayed "
         "model context). If you manage the model through an Ollama Modelfile, "
         "set `PARAMETER num_ctx 65536` there instead."
     )
@@ -2819,6 +2850,7 @@ def run_conversation(
 
                     _llm_request_mw = apply_llm_request_middleware(
                         api_kwargs,
+                        user_message=original_user_message,
                         task_id=effective_task_id,
                         turn_id=turn_id,
                         api_request_id=api_request_id,
@@ -2833,9 +2865,19 @@ def run_conversation(
                     api_kwargs = _llm_request_mw.payload
                     _original_api_kwargs = _llm_request_mw.original_payload
                     _llm_middleware_trace = _llm_request_mw.trace
-                except Exception:
+                except Exception as _organic_middleware_error:
+                    if os.environ.get("ORGANIC_HERMES_MODE", "0").strip().lower() in {
+                        "1", "true", "yes", "on"
+                    }:
+                        raise RuntimeError(
+                            "Organic request control failed closed before the provider call."
+                        ) from _organic_middleware_error
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
+
+                _middleware_disable_streaming = bool(
+                    api_kwargs.pop("_hermes_disable_streaming", False)
+                )
 
                 try:
                     from hermes_cli.lifecycle import (
@@ -2948,7 +2990,7 @@ def run_conversation(
                     if agent.thinking_callback:
                         agent.thinking_callback("")
 
-                _use_streaming = True
+                _use_streaming = not _middleware_disable_streaming
                 # Provider signaled "stream not supported" on a previous
                 # attempt — switch to non-streaming for the rest of this
                 # session instead of re-failing every retry.
@@ -7233,6 +7275,23 @@ def run_conversation(
                                 agent.stream_delta_callback(None)
                             except Exception:
                                 pass
+                    break
+
+                _authoritative_answer = _authoritative_tool_return_answer(messages)
+                if _authoritative_answer:
+                    _turn_exit_reason = "authoritative_tool_return"
+                    final_response = _authoritative_answer
+                    append_message(
+                        messages,
+                        {"role": "assistant", "content": final_response},
+                    )
+                    agent._safe_print(f"\n{final_response}\n")
+                    if agent.stream_delta_callback:
+                        try:
+                            agent.stream_delta_callback(final_response)
+                            agent.stream_delta_callback(None)
+                        except Exception:
+                            pass
                     break
 
                 # Reset per-turn retry counters after successful tool

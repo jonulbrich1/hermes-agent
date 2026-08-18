@@ -1,0 +1,9 @@
+SOURCE_TITLE: Elementary Botany
+AUTHOR: George Francis Atkinson
+SOURCE_URL: https://www.gutenberg.org/ebooks/64601
+LICENSE_STATUS: Public domain in the USA (Project Gutenberg)
+ROLE: Cached web stand-in; not ingested until the active learner requests it
+
+By an examination of our leaf section we see that the intercellular spaces are all connected, and that the stomata, where they occur, open also into intercellular spaces. There is here an opportunity for the water vapor in the intercellular spaces to escape when the stomata are open.
+
+Action of the stomata.—The guard cells serve an important function in regulating transpiration. During normal transpiration the guard cells are turgid and their peculiar form then causes them to arch away from each other, allowing the escape of water vapor. When the air becomes too dry transpiration is in excess of absorption by the roots. The guard cells lose some of their water, and collapse so that their inner faces meet in a straight line and close the stoma. Thus the rapid transpiration is checked.

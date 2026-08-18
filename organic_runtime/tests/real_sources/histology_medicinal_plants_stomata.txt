@@ -1,0 +1,7 @@
+SOURCE_TITLE: Histology of Medicinal Plants
+AUTHOR: William Mansfield
+SOURCE_URL: https://www.gutenberg.org/ebooks/65569
+LICENSE_STATUS: Public domain in the USA (Project Gutenberg)
+ROLE: Cached web stand-in; not ingested until the active learner requests it
+
+The functions of gas exchange are carried on by the stomata, the water-pores, the lenticels, and the intercellular spaces of the plant. The stoma also functions as an organ of transpiration, since through the stoma a large part of the excess water of the plant passes off into the air.
