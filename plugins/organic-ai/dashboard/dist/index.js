@@ -329,6 +329,8 @@
     var chat = (state && state.hermes_chat) || {};
     var executive = engine.executive || engine.core || {};
     var processor = engine.processor || {};
+    var seed = processor.v7_seed || {};
+    var thought = processor.thought_policy || {};
     var startupError = state && state.startup_error;
     var healthy = runtime.status !== "error";
 
@@ -425,9 +427,12 @@
             h(KeyValue, { label: "Idle cycles", value: engine.completed_idle_cycles || 0 }),
             h(KeyValue, { label: "Processor growth cycles", value: engine.completed_processor_growth_cycles || 0 }),
             h(KeyValue, { label: "Executive mode", value: executive.mode || executive.kind || "available" }),
-            h(KeyValue, { label: "Processor mode", value: processor.mode || "unavailable" }),
+            h(KeyValue, { label: "Processor", value: (processor.version || "unknown") + " / " + (processor.mode || "unavailable") }),
             h(KeyValue, { label: "Processor experiences", value: processor.experience_count || 0 }),
             h(KeyValue, { label: "Processor composites", value: processor.composite_count || 0 }),
+            h(KeyValue, { label: "V7 seed", value: seed.loaded ? (seed.experience_count || 0) + " experiences" : "not loaded" }),
+            h(KeyValue, { label: "Primitives", value: (processor.executable_primitive_count || 0) + " live / " + (processor.seed_primitive_count || 0) + " seed" }),
+            h(KeyValue, { label: "Thought policy", value: thought.available ? (thought.policy || "v9") + " " + (thought.mode || "shadow") : "unavailable" }),
             h(KeyValue, { label: "Learned pathways", value: processor.learned_pathway_count || 0 }),
             h(KeyValue, { label: "Capability frontier", value: processor.growth_frontier_count || 0 }),
             h(KeyValue, { label: "Resolved gaps", value: processor.resolved_gap_count || 0 }),

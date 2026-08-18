@@ -25,10 +25,8 @@ if %ERRORLEVEL% NEQ 0 goto fail
 python -m pip install mcp==1.28.1
 if %ERRORLEVEL% NEQ 0 goto fail
 
-if not exist organic_runtime\.venv\Scripts\python.exe (
-    call organic_runtime\setup_local.bat
-    if %ERRORLEVEL% NEQ 0 goto fail
-)
+call organic_runtime\setup_local.bat
+if %ERRORLEVEL% NEQ 0 goto fail
 
 python scripts\configure_organic_hermes.py
 if %ERRORLEVEL% NEQ 0 goto fail

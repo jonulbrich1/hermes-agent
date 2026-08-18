@@ -5,16 +5,15 @@ import asyncio
 import importlib.util
 import json
 import os
-from pathlib import Path
 import threading
 import time
 import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
 from organic_runtime.factory import build_runtime
-
 
 HTML = r"""<!doctype html>
 <html lang="en">
@@ -389,6 +388,8 @@ HTML = r"""<!doctype html>
       const settings = state.settings || {};
       const executive = engine.executive || engine.core || {};
       const processor = engine.processor || {};
+      const seed = processor.v7_seed || {};
+      const thought = processor.thought_policy || {};
       const rolling = state.rolling_context || {};
       $("runtime").innerHTML = [
         kv("Status", runtime.status || "unknown"),
@@ -408,9 +409,12 @@ HTML = r"""<!doctype html>
         kv("Manual budget", engine.manual_growth_budget || 0),
         kv("Idle cycles", engine.completed_idle_cycles || 0),
         kv("Executive mode", executive.mode || executive.kind || "available"),
-        kv("Processor mode", processor.mode || "unavailable"),
+        kv("Processor", `${processor.version || "unknown"} / ${processor.mode || "unavailable"}`),
         kv("Processor experiences", processor.experience_count || 0),
         kv("Processor composites", processor.composite_count || 0),
+        kv("V7 seed", seed.loaded ? `${seed.experience_count || 0} experiences` : "not loaded"),
+        kv("Primitives", `${processor.executable_primitive_count || 0} live / ${processor.seed_primitive_count || 0} seed`),
+        kv("Thought policy", thought.available ? `${thought.policy || "v9"} ${thought.mode || "shadow"}` : "unavailable"),
         kv("Processor state bytes", processor.state_bytes || 0)
       ].join("");
       $("memory").innerHTML = [

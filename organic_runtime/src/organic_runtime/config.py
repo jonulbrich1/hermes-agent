@@ -53,13 +53,23 @@ class RuntimeSettings:
     bootstrap_growth_enabled: bool = True
     bootstrap_growth_query: str = "organic ai cognition memory evidence growth"
     processor_max_cycles: int = 16
+    processor_seed_enabled: bool = True
+    processor_seed_path: Path | None = None
+    thought_enabled: bool = False
+    thought_shadow: bool = True
+    thought_policy: str = "v9"
+    thought_max_tokens: int = 2048
+    thought_max_cycles: int = 20
+    thought_max_context_tokens: int = 32_000
+    thought_max_retrieval_calls: int = 14
+    thought_max_model_tokens_per_decision: int = 192
     fast_complexity_max: float = 0.25
     fast_uncertainty_max: float = 0.35
     known_confidence_min: float = 0.80
     escalate_uncertainty: float = 0.55
 
     @classmethod
-    def from_env(cls) -> "RuntimeSettings":
+    def from_env(cls) -> RuntimeSettings:
         hermes_root = _hermes_project_root()
         default_trace_dir = (
             hermes_root / "runtime" / "organic_home" / "traces"
@@ -98,6 +108,27 @@ class RuntimeSettings:
             processor_max_cycles=max(
                 4,
                 min(_int_env("ORGANIC_PROCESSOR_MAX_CYCLES", 16), 128),
+            ),
+            processor_seed_enabled=os.getenv("ORGANIC_PROCESSOR_SEED_ENABLED", "1").strip().lower()
+            not in {"0", "false", "no", "off"},
+            processor_seed_path=(
+                Path(os.environ["ORGANIC_PROCESSOR_SEED_PATH"]).expanduser()
+                if os.getenv("ORGANIC_PROCESSOR_SEED_PATH")
+                else None
+            ),
+            thought_enabled=os.getenv("ORGANIC_THOUGHT_ENABLED", "0").strip().lower()
+            in {"1", "true", "yes", "on"},
+            thought_shadow=os.getenv("ORGANIC_THOUGHT_SHADOW", "1").strip().lower()
+            not in {"0", "false", "no", "off"},
+            thought_policy=os.getenv("ORGANIC_THOUGHT_POLICY", "v9").strip().lower(),
+            thought_max_tokens=max(64, _int_env("ORGANIC_THOUGHT_MAX_TOKENS", 2048)),
+            thought_max_cycles=max(1, _int_env("ORGANIC_THOUGHT_MAX_CYCLES", 20)),
+            thought_max_context_tokens=max(
+                1024, _int_env("ORGANIC_THOUGHT_MAX_CONTEXT_TOKENS", 32_000)
+            ),
+            thought_max_retrieval_calls=max(0, _int_env("ORGANIC_THOUGHT_MAX_RETRIEVAL_CALLS", 14)),
+            thought_max_model_tokens_per_decision=max(
+                16, _int_env("ORGANIC_THOUGHT_MAX_MODEL_TOKENS", 192)
             ),
             fast_complexity_max=_float_env("ORGANIC_GATE_FAST_COMPLEXITY_MAX", 0.25),
             fast_uncertainty_max=_float_env("ORGANIC_GATE_FAST_UNCERTAINTY_MAX", 0.35),

@@ -4,14 +4,24 @@ import copy
 import json
 import os
 import threading
+from collections import Counter
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .contracts import (
+    CognitiveContext,
+    PresenterPacket,
+    ProcessorBudgets,
+    ProcessOutcome,
+    VerificationReceipt,
+    VerifiedAttempt,
+)
 from .operators import OPERATORS, OperatorError
 from .primitives import PRIMITIVE_SPECS
+from .seed_policy import SeedFormatError, V7SeedPolicy
 from .types import ProcessResult, ProcessTrace, StructuralTask
-
 
 SEED_PATHWAYS: dict[str, dict[str, list[str]]] = {
     "order_cardinality": {
@@ -45,22 +55,42 @@ INITIAL_EDGE_WEIGHTS = {
     "START->SELECT_GROUNDED_CANDIDATES": 0.80,
 }
 
+
 class OrganicProcessor:
     """Bounded adaptive structural processor with no external-resource access."""
 
     mode = "bounded_structural_processor"
-    version = "0.5.0"
+    version = "0.11.0-rc1"
 
     def __init__(
         self,
         state_path: str | Path | None = None,
         learning_rate: float = 0.25,
         max_state_bytes: int = 16 * 1024 * 1024,
+        seed_path: str | Path | None = None,
+        seed_enabled: bool = True,
+        budgets: ProcessorBudgets | None = None,
     ) -> None:
         self.state_path = Path(state_path) if state_path else None
         self.learning_rate = float(learning_rate)
         self.max_state_bytes = int(max_state_bytes)
+        self.budgets = budgets or ProcessorBudgets()
         self._lock = threading.RLock()
+        self.seed_policy: V7SeedPolicy | None = None
+        self.seed_error: str | None = None
+        self._thought_status: dict[str, Any] = {
+            "enabled": False,
+            "shadow": False,
+            "available": False,
+            "policy": "v9",
+        }
+        if seed_enabled:
+            try:
+                self.seed_policy = V7SeedPolicy.load(seed_path)
+            except (OSError, ValueError, TypeError, SeedFormatError) as exc:
+                self.seed_error = f"{type(exc).__name__}: {exc}"
+        else:
+            self.seed_error = "disabled_by_configuration"
         self.state = self._load()
 
     @staticmethod
@@ -114,10 +144,90 @@ class OrganicProcessor:
             previous = name
         return edges
 
-    def _path_score(self, operators: list[str]) -> float:
+    def _overlay_path_score(self, operators: list[str]) -> float:
         return sum(
             float(self.state["edge_weights"].get(edge, 0.0)) for edge in self._path_edges(operators)
         )
+
+    @staticmethod
+    def cognitive_context(
+        task: StructuralTask,
+        *,
+        evidence_refs: Iterable[str] = (),
+        uncertainty: float = 0.0,
+        metadata: dict[str, Any] | None = None,
+    ) -> CognitiveContext:
+        family_aliases = {
+            "symbolic_linear_constraints": "linear_constraints",
+            "boolean_case_analysis": "case_logic",
+            "bounded_arithmetic": "scalar",
+        }
+        domain_by_family = {
+            "symbolic_linear_constraints": "linear_direct",
+            "boolean_case_analysis": "boolean_entailment",
+            "bounded_arithmetic": "arithmetic",
+            "partial_order": "topological",
+        }
+        family = family_aliases.get(task.family, task.family)
+        features = {f"family:{family}", f"objective:{task.goal}"}
+        domain = domain_by_family.get(task.family)
+        if domain:
+            features.add(f"domain:{domain}")
+
+        kinds = Counter(str(item.get("kind") or "") for item in task.constraints)
+        equation_count = kinds.get("linear_equation", 0)
+        if equation_count:
+            features.add(f"equations:{equation_count}")
+        variables = {
+            str(name) for item in task.constraints for name in (item.get("coefficients") or {})
+        }
+        if variables:
+            features.add(f"variables:{len(variables)}")
+        if task.constraints:
+            features.add(f"premises:{len(task.constraints)}")
+
+        return CognitiveContext(
+            goal=task.goal,
+            feature_keys=tuple(sorted(features)),
+            operator_feature_keys=tuple(sorted(features)),
+            evidence_refs=tuple(dict.fromkeys(str(item) for item in evidence_refs if str(item))),
+            uncertainty=max(0.0, min(1.0, float(uncertainty))),
+            metadata=dict(metadata or {}),
+        )
+
+    def _path_score(
+        self,
+        operators: list[str],
+        task: StructuralTask | None = None,
+        context: CognitiveContext | None = None,
+    ) -> tuple[float, float]:
+        if context is None and task is not None:
+            context = self.cognitive_context(task)
+        seed_score = (
+            self.seed_policy.score_path(operators, context) if self.seed_policy is not None else 0.0
+        )
+        return seed_score + self._overlay_path_score(operators), seed_score
+
+    def _rank_paths(
+        self,
+        task: StructuralTask,
+        paths: Iterable[tuple[str, list[str]]],
+        context: CognitiveContext | None = None,
+    ) -> tuple[list[tuple[str, list[str], float, float]], list[str]]:
+        missing: set[str] = set()
+        ranked: list[tuple[str, list[str], float, float]] = []
+        for name, operators in paths:
+            normalized = [str(operator).upper() for operator in operators]
+            absent = [operator for operator in normalized if operator not in OPERATORS]
+            if absent:
+                missing.update(absent)
+                continue
+            if len(normalized) > self.budgets.max_path_length:
+                continue
+            combined, seed_score = self._path_score(normalized, task, context)
+            ranked.append((str(name), normalized, combined, seed_score))
+        ranked.sort(key=lambda item: (-item[2], item[0], tuple(item[1])))
+        return ranked[: self.budgets.max_candidate_paths], sorted(missing)
 
     def available_pathways(self, task: StructuralTask) -> dict[str, list[str]]:
         expected_goal = {
@@ -171,7 +281,12 @@ class OrganicProcessor:
             trace.valid = False
         return trace
 
-    def process(self, task: StructuralTask, explore: bool = False) -> ProcessResult:
+    def process(
+        self,
+        task: StructuralTask,
+        explore: bool = False,
+        context: CognitiveContext | None = None,
+    ) -> ProcessResult:
         with self._lock:
             paths = self.available_pathways(task)
             if not paths:
@@ -179,22 +294,97 @@ class OrganicProcessor:
                     status="CAPABILITY_GAP",
                     capability_gap=f"No pathway for structural signature {task.signature()}",
                 )
-            ranked = sorted(paths.items(), key=lambda item: (-self._path_score(item[1]), item[0]))
+            ranked, missing = self._rank_paths(task, paths.items(), context)
+            if not ranked:
+                reason = "WAITING_FOR_PRIMITIVE" if missing else "NO_BOUNDED_CANDIDATE"
+                return ProcessResult(
+                    status="CAPABILITY_GAP",
+                    capability_gap=reason,
+                    missing_primitives=missing,
+                )
             if explore:
                 return ProcessResult(
                     status="EXPLORED",
                     alternatives=[
-                        self._execute(task, name, operators) for name, operators in ranked
+                        self._execute(task, name, operators)
+                        for name, operators, _combined, _seed in ranked
                     ],
+                    missing_primitives=missing,
                 )
-            name, operators = ranked[0]
+            name, operators, combined_score, seed_score = ranked[0]
             trace = self._execute(task, name, operators)
             return ProcessResult(
                 status="OK" if trace.answer is not None else "FAILED",
                 answer=trace.answer,
-                confidence=min(0.99, max(0.05, self._path_score(operators) / 4.0)),
+                confidence=min(0.99, max(0.05, combined_score / 4.0)),
                 trace=trace,
+                missing_primitives=missing,
+                seed_score=seed_score,
             )
+
+    def verify_candidates(
+        self,
+        task: StructuralTask,
+        traces: Iterable[ProcessTrace],
+        verifier: Callable[[StructuralTask, ProcessTrace], VerificationReceipt],
+        context: CognitiveContext | None = None,
+    ) -> ProcessOutcome:
+        """Convert candidate traces into a result only through an external verifier."""
+        cognitive_context = context or self.cognitive_context(task)
+        attempts: list[VerifiedAttempt] = []
+        operator_steps = 0
+        for trace in traces:
+            if operator_steps + len(trace.operators) > self.budgets.max_operator_steps:
+                break
+            operator_steps += len(trace.operators)
+            receipt = verifier(task, trace)
+            if not isinstance(receipt, VerificationReceipt):
+                raise TypeError("verifier_must_return_VerificationReceipt")
+            _combined, seed_score = self._path_score(list(trace.operators), task, cognitive_context)
+            attempts.append(VerifiedAttempt(trace, receipt, seed_score))
+            if receipt.accepted:
+                return ProcessOutcome(
+                    status="VERIFIED",
+                    answer=trace.answer,
+                    trace=trace,
+                    verification=receipt,
+                    attempts=attempts,
+                    seed_score=seed_score,
+                )
+        return ProcessOutcome(status="UNRESOLVED", attempts=attempts)
+
+    @staticmethod
+    def presenter_packet(
+        question: str,
+        outcome: ProcessOutcome,
+        context: CognitiveContext,
+    ) -> PresenterPacket:
+        verified = bool(outcome.verification and outcome.verification.accepted)
+        warnings: list[str] = []
+        if outcome.capability_gap:
+            warnings.append(outcome.capability_gap)
+        if not verified:
+            warnings.append("presenter_must_not_invent_an_answer")
+        evidence_refs = (
+            outcome.verification.evidence_refs
+            if outcome.verification is not None
+            else context.evidence_refs
+        )
+        return PresenterPacket(
+            question=question,
+            status=outcome.status,
+            verified=verified,
+            answer=outcome.answer if verified else None,
+            evidence_refs=tuple(evidence_refs),
+            processor_path=tuple(outcome.trace.operators) if outcome.trace else (),
+            verifier=outcome.verification.verifier if outcome.verification else None,
+            uncertainty=context.uncertainty,
+            warnings=tuple(warnings),
+        )
+
+    def set_thought_status(self, status: dict[str, Any]) -> None:
+        with self._lock:
+            self._thought_status = copy.deepcopy(status)
 
     @staticmethod
     def _timestamp() -> str:
@@ -234,7 +424,12 @@ class OrganicProcessor:
             self._save_state(self.state)
             return key
 
-    def discover(self, task: StructuralTask, max_candidates: int = 8) -> ProcessResult:
+    def discover(
+        self,
+        task: StructuralTask,
+        max_candidates: int = 8,
+        context: CognitiveContext | None = None,
+    ) -> ProcessResult:
         with self._lock:
             kinds = {str(item.get("kind") or "") for item in task.constraints}
             requested = {
@@ -248,6 +443,7 @@ class OrganicProcessor:
                         "WAITING_FOR_PRIMITIVE: no deterministic handler for "
                         + ", ".join(unavailable)
                     ),
+                    missing_primitives=unavailable,
                 )
             primitives = [
                 spec
@@ -256,13 +452,13 @@ class OrganicProcessor:
                 and (not spec.goals or task.goal in spec.goals)
                 and spec.required_kinds.issubset(kinds)
             ]
-            limit = max(1, min(int(max_candidates), 8))
+            limit = max(1, min(int(max_candidates), self.budgets.max_candidate_paths))
             candidates: list[list[str]] = []
             frontier: list[tuple[list[str], frozenset[str]]] = [([], frozenset())]
             visited: set[tuple[tuple[str, ...], frozenset[str]]] = set()
             while frontier and len(candidates) < limit:
                 operators, available = frontier.pop(0)
-                if len(operators) >= 12:
+                if len(operators) >= self.budgets.max_path_length:
                     continue
                 for spec in primitives:
                     name = spec.name
@@ -287,16 +483,21 @@ class OrganicProcessor:
                 return ProcessResult(
                     status="CAPABILITY_GAP",
                     capability_gap=(
-                        "No bounded primitive composition satisfies "
-                        f"{task.capability_signature()}"
+                        f"No bounded primitive composition satisfies {task.capability_signature()}"
                     ),
                 )
+            ranked, missing = self._rank_paths(
+                task,
+                (("DISCOVERED:" + ">".join(operators), operators) for operators in candidates),
+                context,
+            )
             return ProcessResult(
                 status="EXPLORED",
                 alternatives=[
-                    self._execute(task, "DISCOVERED:" + ">".join(operators), operators)
-                    for operators in candidates
+                    self._execute(task, name, operators)
+                    for name, operators, _combined, _seed in ranked
                 ],
+                missing_primitives=missing,
             )
 
     def promote_discovered(self, task: StructuralTask, trace: ProcessTrace) -> None:
@@ -308,7 +509,7 @@ class OrganicProcessor:
                 "family": task.family,
                 "goal": task.goal,
                 "operators": list(trace.operators),
-                "score": round(self._path_score(trace.operators), 6),
+                "score": round(self._path_score(trace.operators, task)[0], 6),
                 "discovered_at": now,
                 "verification_required": True,
             }
@@ -410,7 +611,7 @@ class OrganicProcessor:
             self.state["experience_count"] = int(self.state.get("experience_count", 0)) + 1
             successes = int(self.state["success_counts"].get(trace.signature, 0))
             if bounded_reward > 0 and successes >= 3:
-                score = self._path_score(trace.operators)
+                score = self._path_score(trace.operators)[0]
                 existing = self.state["composites"].get(trace.signature)
                 if not existing or score > float(existing.get("score", -999.0)):
                     self.state["composites"][trace.signature] = {
@@ -436,6 +637,12 @@ class OrganicProcessor:
         with self._lock:
             learned = self.state.get("learned_pathways", {})
             frontier = self.state.get("growth_frontier", {})
+            seed_names = (
+                set(self.seed_policy.primitive_names)
+                if self.seed_policy is not None
+                else {spec.name for spec in PRIMITIVE_SPECS}
+            )
+            executable_seed_names = seed_names.intersection(OPERATORS)
             learned_families = {
                 str(item.get("family"))
                 for item in learned.values()
@@ -459,13 +666,26 @@ class OrganicProcessor:
                 "growth_event_count": int(self.state.get("growth_event_count", 0)),
                 "last_growth_result": copy.deepcopy(self.state.get("last_growth_result")),
                 "supported_families": sorted(set(SEED_PATHWAYS) | learned_families),
-                "seed_primitive_count": len(PRIMITIVE_SPECS),
-                "executable_primitive_count": sum(
-                    1 for spec in PRIMITIVE_SPECS if spec.name in OPERATORS
+                "seed_primitive_count": len(seed_names),
+                "declared_primitive_count": len(PRIMITIVE_SPECS),
+                "executable_primitive_count": len(executable_seed_names),
+                "waiting_primitive_count": len(seed_names - executable_seed_names),
+                "v7_seed": (
+                    self.seed_policy.status()
+                    if self.seed_policy is not None
+                    else {
+                        "loaded": False,
+                        "version": "V7",
+                        "error": self.seed_error,
+                        "immutable_base": True,
+                    }
                 ),
-                "waiting_primitive_count": sum(
-                    1 for spec in PRIMITIVE_SPECS if spec.name not in OPERATORS
-                ),
+                "runtime_learning_overlay": {
+                    "state_path": str(self.state_path) if self.state_path else None,
+                    "experience_count": int(self.state.get("experience_count", 0)),
+                    "recoverable_without_seed_mutation": True,
+                },
+                "thought_policy": copy.deepcopy(self._thought_status),
                 # Kept for callers of the earlier status contract.
                 "discoverable_primitives": sum(
                     1 for spec in PRIMITIVE_SPECS if spec.name in OPERATORS

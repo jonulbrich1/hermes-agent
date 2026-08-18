@@ -8,12 +8,12 @@ from typing import Any
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
+from organic_runtime.cognition.structural import infer_structural_fields
 from organic_runtime.contracts import (
     IntentEnvelope,
     RuntimeStateSnapshot,
     SemanticCompletenessReview,
 )
-from organic_runtime.cognition.structural import infer_structural_fields
 from organic_runtime.semantic.base import (
     clarification_subject,
     enforce_objective_coverage,
@@ -116,10 +116,12 @@ external validator has accepted exhaustive case analysis.
 
 _PRESENTATION_INSTRUCTIONS = """
 You are the Semantic Interface presenter for Organic AI.
-Rewrite only the validated Organic result into a concise direct response to the
-user. You may shorten, order, and paraphrase supplied facts, but you must not add
+Rewrite only the validated Organic presenter packet into a concise direct response
+to the user. You may shorten, order, and paraphrase supplied facts, but you must not add
 facts, numbers, versions, conclusions, or source claims that are absent from the
-validated result. Answer the requested objective directly in the first sentence.
+packet. Never recompute, rejudge, replace, or contradict its result. If
+verified=false, do not manufacture an answer. Answer the requested objective directly
+in the first sentence when a verified answer is present.
 Preserve exact version and numeric tokens. When the objective asks for the latest,
 current, or stable version and the result supplies that selected version, explicitly
 use the user's requested qualifier. Omit incomplete date fragments. Do not discuss
@@ -270,13 +272,29 @@ class PydanticAISemanticInterface:
         answer: str,
         metadata: dict,
     ) -> str:
-        if metadata.get("reasoning_mode") == "self_contained":
+        packet = metadata.get("presenter_packet")
+        if isinstance(packet, dict) and not bool(packet.get("verified")):
             return answer
+        if metadata.get("reasoning_mode") == "self_contained" and not isinstance(packet, dict):
+            return answer
+        packet_payload = (
+            json.dumps(packet, ensure_ascii=False, sort_keys=True)
+            if isinstance(packet, dict)
+            else json.dumps(
+                {
+                    "status": "LEGACY_VALIDATED_RESULT",
+                    "verified": True,
+                    "answer": answer,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
         prompt = (
             f"User objective: {request}\n"
             f"Requested output: {envelope.requested_output}\n"
-            f"Validated Organic result: {answer}\n"
-            "Present this result only."
+            f"Validated Organic presenter packet: {packet_payload}\n"
+            "Present this packet only."
         )
         if self._ollama_model_name and self._ollama_model_name.lower().startswith("qwen"):
             presented = await asyncio_to_thread(self._direct_qwen_presentation, prompt)

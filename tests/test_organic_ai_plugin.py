@@ -97,6 +97,11 @@ def _fake_handoff(text):
         "metadata": {
             "hard_blocked": False,
             "semantic_interface_completeness": {"complete": True},
+            "presenter_packet": {
+                "status": "VERIFIED",
+                "verified": True,
+                "answer": "Validated Organic answer.",
+            },
         },
     }
 
@@ -148,6 +153,11 @@ organic_middleware.on_tool_execution(
 )
 presenter = on_llm_request(request=request, turn_id="fork-test")["request"]
 T("Hermes presenter pass exposes no bypass tools", presenter.get("tools") == [])
+T(
+    "Hermes presenter is bound to the validated packet",
+    "presenter_packet is the authoritative result boundary"
+    in presenter["messages"][0]["content"],
+)
 
 provider_shaped = on_llm_request(
     request={"messages": [], "tools": request["tools"]},

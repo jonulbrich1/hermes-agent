@@ -73,18 +73,27 @@ only a verified pathway. Idle time retries pending processor growth before the
 Executive selects the next graph-growth task. The Hermes model can propose structure but
 cannot generate executable operators, assign rewards, or approve a pathway.
 
-The initial processor seed is a vocabulary of 35 typed, bounded cognitive
-primitives across representation, algebra, constraints, graphs, logic, search,
-and verification. It is deliberately not a catalog of solved task-family
-procedures. A model may name a required operation, but Organic will execute it
-only when a deterministic handler exists. Otherwise the task remains visible as
-`WAITING_FOR_PRIMITIVE`. Successful primitive compositions are independently
-verified and learned as reusable pathways: the seed supplies cognitive atoms;
-growth discovers the molecules.
+Organic Processor `0.11.0-rc1` loads the accepted V7 policy as an immutable base:
+930,838 verifier-scored experiences and 40 learned primitive names. Runtime
+learning remains a separate recoverable overlay. The seed is deliberately not a
+catalog of solved task-family procedures. A model or learned policy may rank a
+required operation, but Organic executes it only when a bounded deterministic
+handler exists. Otherwise the task remains visible as `WAITING_FOR_PRIMITIVE`.
+Successful primitive compositions are independently verified and learned as
+reusable pathways.
+
+The optional V9 thought controller runs in shadow mode by default. It can rank
+only programmatically authorized typed actions and has no direct graph, web,
+Living Memory, or tool access. Set `ORGANIC_THOUGHT_ENABLED=1` only after shadow
+results have been reviewed; independent verification remains mandatory either
+way. Final Hermes presentation is bound to a `PresenterPacket`, and unverified
+candidates are removed from its answer field.
 
 The detailed processor POC review, implemented architecture, live acceptance
 results, and remaining capability gaps are documented in
 `docs/ORGANIC_PROCESSOR_REFACTOR_IMPLEMENTATION.md`.
+The V11 migration and validation status is documented in
+`docs/ORGANIC_PROCESSOR_V11_IMPLEMENTATION.md`.
 
 ## Data Paths
 

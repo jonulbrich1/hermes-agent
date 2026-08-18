@@ -17,13 +17,13 @@ if %ERRORLEVEL% NEQ 0 goto fail
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 if %ERRORLEVEL% NEQ 0 goto fail
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,thought]"
 if %ERRORLEVEL% NEQ 0 goto fail
 goto success
 
 :use_uv
 echo [Organic AI] uv detected. Syncing project and development dependencies.
-uv sync --extra dev
+uv sync --extra dev --extra thought
 if %ERRORLEVEL% NEQ 0 goto fail
 goto success
 

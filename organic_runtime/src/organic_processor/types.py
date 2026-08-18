@@ -75,6 +75,8 @@ class ProcessResult:
     trace: ProcessTrace | None = None
     alternatives: list[ProcessTrace] = field(default_factory=list)
     capability_gap: str | None = None
+    missing_primitives: list[str] = field(default_factory=list)
+    seed_score: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

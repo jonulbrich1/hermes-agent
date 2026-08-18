@@ -1,0 +1,7 @@
+{
+  "vocab_size": 100,
+  "emb_dim": 64,
+  "hidden": 128,
+  "max_tokens": 192,
+  "architecture": "mean_embedding_action_ranker"
+}

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import hashlib
 import platform
 import re
 import shutil
@@ -20,8 +20,23 @@ from organic_mvp.memory import MemoryCompiler
 from organic_mvp.review import ReviewExporter
 from organic_mvp.scheduler import OrganicEngine
 from organic_mvp.util import content_words, norm_space, stable_uid, utcnow
-from organic_processor import LegacyLogicSeedAdapter, OrganicProcessor, StructuralTask
-
+from organic_processor import (
+    ActionProposal,
+    LegacyLogicSeedAdapter,
+    OrganicProcessor,
+    PresenterPacket,
+    ProcessOutcome,
+    StructuralTask,
+    ThoughtLimits,
+    ThoughtPolicyController,
+    ThoughtState,
+    VerificationReceipt,
+)
+from organic_processor import (
+    Evidence as ThoughtEvidence,
+)
+from organic_processor.seed_policy import processor_asset_dir
+from organic_runtime.cognition import build_active_weave, compile_structural_task, verify_trace
 from organic_runtime.config import RuntimeSettings
 from organic_runtime.contracts import (
     ActiveWeave,
@@ -37,25 +52,29 @@ from organic_runtime.contracts import (
     PreflightKnowledge,
 )
 from organic_runtime.instance_lock import RuntimeDataLock
-from organic_runtime.cognition import build_active_weave, compile_structural_task, verify_trace
 from organic_runtime.semantic.base import clarification_subject
-
 
 KNOWN_BOOTSTRAP_ANSWERS = {
     "organic ai routing principle": (
         "mem-routing-principle",
-        "The Semantic Interface may recommend a route, but the programmatic Interaction "
-        "Gate authorizes it. Uncertainty escalates rather than bypassing the Organic Core.",
+        (
+            "The Semantic Interface may recommend a route, but the programmatic Interaction "
+            "Gate authorizes it. Uncertainty escalates rather than bypassing the Organic Core."
+        ),
     ),
     "bounded core": (
         "mem-bounded-core",
-        "The learned core remains bounded while durable domain knowledge lives in external "
-        "memory, cognition structures, procedures, indexes, and tools.",
+        (
+            "The learned core remains bounded while durable domain knowledge lives in external "
+            "memory, cognition structures, procedures, indexes, and tools."
+        ),
     ),
     "gate is deterministic": (
         "mem-deterministic-gate",
-        "The gate is deterministic so a model suggestion is never enough to authorize a "
-        "shortcut, privileged tool, factual answer, or memory write.",
+        (
+            "The gate is deterministic so a model suggestion is never enough to authorize a "
+            "shortcut, privileged tool, factual answer, or memory write."
+        ),
     ),
 }
 
@@ -166,7 +185,11 @@ class MvpOrganicSystem:
                 max_state_bytes=min(
                     int(self.config.get("max_core_bytes", 5 * 1024**3)), 16 * 1024**2
                 ),
+                seed_path=settings.processor_seed_path,
+                seed_enabled=settings.processor_seed_enabled,
             )
+            self.thought_controller: ThoughtPolicyController | None = None
+            self._configure_thought_policy()
             self.legacy_processor = LegacyLogicSeedAdapter(
                 self.root / "runtime" / "legacy_seed" / "v0.2.1"
             )
@@ -193,6 +216,9 @@ class MvpOrganicSystem:
                     "web_provider": settings.web_provider,
                     "idle_growth_enabled": settings.idle_growth_enabled,
                     "processor_max_cycles": settings.processor_max_cycles,
+                    "processor_version": self.processor.version,
+                    "processor_seed": self.processor.status().get("v7_seed"),
+                    "thought_policy": self.processor.status().get("thought_policy"),
                     "hermes_mode": os.getenv("ORGANIC_HERMES_MODE", "0") == "1",
                     "hermes_plugin_enabled": os.getenv("ORGANIC_HERMES_PLUGIN_ENABLED", "0") == "1",
                     "shared_runtime_url": os.getenv("ORGANIC_RUNTIME_URL", "http://127.0.0.1:8788"),
@@ -220,6 +246,123 @@ class MvpOrganicSystem:
         except BaseException:
             self._instance_lock.release()
             raise
+
+    def _configure_thought_policy(self) -> None:
+        requested = self.settings.thought_enabled or self.settings.thought_shadow
+        status: dict[str, Any] = {
+            "enabled": self.settings.thought_enabled,
+            "shadow": self.settings.thought_shadow,
+            "available": False,
+            "policy": self.settings.thought_policy,
+            "direct_tool_access": False,
+            "authority": "action_ranking_only",
+        }
+        if not requested:
+            status["reason"] = "disabled_by_configuration"
+            self.processor.set_thought_status(status)
+            return
+        if self.settings.thought_policy != "v9":
+            status["error"] = f"unsupported_thought_policy:{self.settings.thought_policy}"
+            self.processor.set_thought_status(status)
+            return
+        assets = processor_asset_dir()
+        try:
+            self.thought_controller = ThoughtPolicyController.load(
+                assets / "thought_policy_v9.pt",
+                assets / "vocab_v9.json",
+                assets / "policy_config_v9.json",
+            )
+            status.update(
+                {
+                    "available": True,
+                    "parameter_count": self.thought_controller.parameter_count,
+                    "asset_dir": str(assets),
+                    "mode": "active" if self.settings.thought_enabled else "shadow",
+                }
+            )
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            status["error"] = f"{type(exc).__name__}: {exc}"
+        self.processor.set_thought_status(status)
+
+    def _run_thought_policy(
+        self,
+        task: StructuralTask,
+        *,
+        external_context_allowed: bool,
+    ) -> dict[str, Any]:
+        if self.thought_controller is None:
+            return dict(self.processor.status().get("thought_policy") or {})
+        evidence_id = "PROCESSOR_TASK"
+        state = ThoughtState(
+            goal=task.goal,
+            current_query=task.signature(),
+            evidence=[
+                ThoughtEvidence(
+                    evidence_id,
+                    (
+                        "Bounded processor request. Use deterministic processor primitives "
+                        "and independent verification before answering."
+                    ),
+                    token_estimate=16,
+                    score=1.0,
+                    authoritative=True,
+                )
+            ],
+        )
+        options = [
+            ActionProposal("use_processor", evidence_id=evidence_id),
+            ActionProposal("abstain"),
+        ]
+        if external_context_allowed:
+            options.insert(0, ActionProposal("retrieve", task.goal))
+        limits = ThoughtLimits(
+            max_thought_tokens=self.settings.thought_max_tokens,
+            max_cycles=self.settings.thought_max_cycles,
+            max_context_tokens=self.settings.thought_max_context_tokens,
+            max_retrieval_calls=self.settings.thought_max_retrieval_calls,
+            max_model_tokens_per_decision=self.settings.thought_max_model_tokens_per_decision,
+        )
+        mode = "active" if self.settings.thought_enabled else "shadow"
+        try:
+            decision = self.thought_controller.choose(state, options, limits, mode=mode)
+            context_request = decision.context_request()
+            payload = {
+                "enabled": self.settings.thought_enabled,
+                "shadow": self.settings.thought_shadow,
+                "available": True,
+                "policy": self.settings.thought_policy,
+                "mode": mode,
+                "selected_action": decision.selected.action,
+                "selected_argument": decision.selected.argument,
+                "authorized_actions": list(decision.authorized_actions),
+                "thought_tokens": decision.token_cost,
+                "scores": list(decision.scores),
+                "context_request": (
+                    {
+                        "action": context_request.action,
+                        "query": context_request.query,
+                        "evidence_id": context_request.evidence_id,
+                        "reason": context_request.reason,
+                    }
+                    if context_request
+                    else None
+                ),
+                "direct_tool_access": False,
+                "authoritative": self.settings.thought_enabled,
+            }
+        except (RuntimeError, ValueError, TypeError) as exc:
+            payload = {
+                "enabled": self.settings.thought_enabled,
+                "shadow": self.settings.thought_shadow,
+                "available": False,
+                "policy": self.settings.thought_policy,
+                "error": f"{type(exc).__name__}: {exc}",
+                "direct_tool_access": False,
+                "authoritative": False,
+            }
+        self.processor.set_thought_status(payload)
+        self.audit.write("processor_thought_decision", **payload)
+        return payload
 
     def _recover_interrupted_tasks(self) -> None:
         rows = self.db.query("SELECT * FROM tasks WHERE status='ACTIVE'")
@@ -332,6 +475,14 @@ class MvpOrganicSystem:
         )
 
     def export_review(self, reason: str = "manual") -> str:
+        processor_status = self.processor.status()
+        self.review.runtime_metadata.update(
+            {
+                "processor_version": self.processor.version,
+                "processor_seed": processor_status.get("v7_seed"),
+                "thought_policy": processor_status.get("thought_policy"),
+            }
+        )
         path = Path(self.review.export(reason))
         review_dir_value = os.getenv("ORGANIC_REVIEW_DIR")
         project_root_value = os.getenv("ORGANIC_PROJECT_ROOT")
@@ -749,12 +900,25 @@ class MvpOrganicSystem:
             durable_memory_allowed=False,
             external_resources_allowed=False,
         )
+        processor_context = self.processor.cognitive_context(
+            structural_task,
+            evidence_refs=(
+                str(item.get("claim_id") or item.get("source_id") or "")
+                for item in candidate_evidence
+            ),
+            uncertainty=envelope.uncertainty,
+            metadata={"active_weave_id": active_weave.weave_id},
+        )
         state_before = self.processor.snapshot()
         before_hash = hashlib.sha256(
             json.dumps(state_before, sort_keys=True).encode("utf-8")
         ).hexdigest()
         started = perf_counter()
-        processor_result = self.processor.process(structural_task, explore=True)
+        processor_result = self.processor.process(
+            structural_task,
+            explore=True,
+            context=processor_context,
+        )
         attempts = list(processor_result.alternatives)
         verified = [(trace, verify_trace(structural_task, trace)) for trace in attempts]
         for trace, verification in verified:
@@ -925,19 +1089,44 @@ class MvpOrganicSystem:
         active_weave = (
             build_active_weave(request.envelope, structural_task) if structural_task else None
         )
+        processor_context = (
+            self.processor.cognitive_context(
+                structural_task,
+                uncertainty=request.envelope.uncertainty,
+                metadata={"resource_plan_id": plan.plan_id, "world_mode": plan.world_mode.value},
+            )
+            if structural_task is not None
+            else None
+        )
+        thought = (
+            self._run_thought_policy(structural_task, external_context_allowed=False)
+            if structural_task is not None
+            else {}
+        )
+        thought_allows_processor = not (
+            self.settings.thought_enabled
+            and thought.get("selected_action") not in {None, "use_processor"}
+        )
+        self.db.add_task_event(
+            task_id,
+            "ORGANIC_THOUGHT_POLICY",
+            f"V9 thought mode={thought.get('mode') or 'unavailable'} action={thought.get('selected_action')}",
+            thought,
+        )
         state_before = self.processor.snapshot()
         state_before_hash = hashlib.sha256(
             json.dumps(state_before, sort_keys=True).encode("utf-8")
         ).hexdigest()
         processor_result = (
-            self.processor.process(structural_task, explore=True)
-            if structural_task is not None
+            self.processor.process(structural_task, explore=True, context=processor_context)
+            if structural_task is not None and thought_allows_processor
             else None
         )
         attempts = list(processor_result.alternatives) if processor_result else []
         processor_growth_attempted = False
         processor_gap_key = None
-        if structural_task is not None and not attempts:
+        discovery = None
+        if structural_task is not None and not attempts and thought_allows_processor:
             processor_growth_attempted = True
             processor_gap_key = self.processor.register_gap(
                 structural_task,
@@ -950,6 +1139,7 @@ class MvpOrganicSystem:
             discovery = self.processor.discover(
                 structural_task,
                 max_candidates=max(1, int(plan.max_processor_cycles)),
+                context=processor_context,
             )
             attempts = list(discovery.alternatives)
             self.db.add_task_event(
@@ -981,6 +1171,50 @@ class MvpOrganicSystem:
         selected = selected_pair[0] if selected_pair else None
         selected_verification = selected_pair[1] if selected_pair else None
         accepted = selected is not None and selected_verification is not None
+        verification_receipt = (
+            VerificationReceipt(
+                accepted=True,
+                verifier="organic_runtime.cognition.verify_trace",
+                reason=selected_verification.result_code,
+                confidence=0.99,
+                reward=selected_verification.reward,
+                checks=dict(selected_verification.checks),
+                expected=selected_verification.expected,
+            )
+            if selected_verification is not None
+            else None
+        )
+        capability_gap = (
+            discovery.capability_gap
+            if discovery is not None and discovery.capability_gap
+            else processor_result.capability_gap
+            if processor_result is not None and processor_result.capability_gap
+            else "THOUGHT_POLICY_ABSTAIN"
+            if not thought_allows_processor
+            else "NO_VERIFIED_PROCESSOR_PATHWAY"
+        )
+        processor_outcome = ProcessOutcome(
+            status="VERIFIED" if accepted else "CAPABILITY_GAP" if not attempts else "UNRESOLVED",
+            answer=selected.answer if selected else None,
+            trace=selected,
+            verification=verification_receipt,
+            capability_gap=None if accepted else capability_gap,
+            missing_primitives=(
+                list(discovery.missing_primitives)
+                if discovery is not None and discovery.missing_primitives
+                else list(processor_result.missing_primitives)
+                if processor_result is not None
+                else []
+            ),
+        )
+        presenter_packet = self.processor.presenter_packet(
+            request.envelope.original_request,
+            processor_outcome,
+            processor_context
+            or self.processor.cognitive_context(
+                StructuralTask(family="unknown", goal="unknown", constraints=())
+            ),
+        )
         if processor_growth_attempted and structural_task is not None:
             if accepted and selected is not None:
                 self.processor.promote_discovered(structural_task, selected)
@@ -1026,9 +1260,7 @@ class MvpOrganicSystem:
             answer = ", ".join(str(item) for item in (answer_value or []))
         elif accepted and structural_task and structural_task.goal == "prove_existential_relation":
             answer = _format_boolean_entailment(structural_task, bool(answer_value))
-        elif (
-            accepted and structural_task and structural_task.goal == "solve_linear_target"
-        ):
+        elif accepted and structural_task and structural_task.goal == "solve_linear_target":
             result = answer_value if isinstance(answer_value, dict) else {}
             values = result.get("values") if isinstance(result.get("values"), dict) else {}
             target_constraint = next(
@@ -1100,6 +1332,9 @@ class MvpOrganicSystem:
                 "capability_signature": processor_gap_key,
                 "promoted": bool(processor_growth_attempted and accepted),
             },
+            "v7_seed": self.processor.status().get("v7_seed"),
+            "thought_policy": thought,
+            "presenter_packet": presenter_packet.to_dict(),
         }
         review = {
             "complete": accepted,
@@ -1152,6 +1387,9 @@ class MvpOrganicSystem:
                 "processor_gap_key": processor_gap_key,
                 "processor_pathway_promoted": bool(processor_growth_attempted and accepted),
                 "legacy_seed": self.legacy_processor.status(),
+                "v7_seed": self.processor.status().get("v7_seed"),
+                "thought_policy": thought,
+                "presenter_packet": presenter_packet.to_dict(),
             },
         )
         self.db.record_core_learning_event(
@@ -1207,6 +1445,10 @@ class MvpOrganicSystem:
                 "processor_growth_attempted": processor_growth_attempted,
                 "processor_gap_key": processor_gap_key,
                 "processor_pathway_promoted": bool(processor_growth_attempted and accepted),
+                "processor_version": self.processor.version,
+                "v7_seed": self.processor.status().get("v7_seed"),
+                "thought_policy": thought,
+                "presenter_packet": presenter_packet.to_dict(),
                 "confidence": 0.99 if accepted else 0.0,
                 "missing": []
                 if accepted
@@ -1375,6 +1617,27 @@ class MvpOrganicSystem:
         if not answer or review["hard_blocked"]:
             missing = self._missing_text(result)
             answer = f"I do not yet have enough grounded information to answer that reliably. Missing: {missing}"
+        evidence_refs = tuple(
+            dict.fromkeys(
+                str(item.get("claim_id") or item.get("source_id") or "")
+                for item in (result.get("sources") or [])
+                if isinstance(item, dict)
+                and str(item.get("claim_id") or item.get("source_id") or "")
+            )
+        )
+        presenter_packet = PresenterPacket(
+            question=request.envelope.original_request,
+            status="VERIFIED" if success and not review["hard_blocked"] else "UNRESOLVED",
+            verified=bool(success and not review["hard_blocked"]),
+            answer=answer if success and not review["hard_blocked"] else None,
+            evidence_refs=evidence_refs,
+            processor_path=tuple(result.get("processor_operators") or []),
+            verifier="memory_compiler_and_result_validator" if success else None,
+            uncertainty=request.envelope.uncertainty,
+            warnings=()
+            if success and not review["hard_blocked"]
+            else ("presenter_must_not_invent_an_answer",),
+        )
         self.engine.complete_interaction_task(
             task_id,
             answer,
@@ -1404,6 +1667,10 @@ class MvpOrganicSystem:
                 "processor_capabilities": result.get("processor_capabilities") or [],
                 "processor_operators": result.get("processor_operators") or [],
                 "processor_cycles": len(result.get("processor_cycles") or []),
+                "processor_version": self.processor.version,
+                "v7_seed": self.processor.status().get("v7_seed"),
+                "thought_policy": self.processor.status().get("thought_policy"),
+                "presenter_packet": presenter_packet.to_dict(),
                 "internal_growth_invoked": internal_growth,
                 "grounded_answer_used": review["grounded_answer_used"],
                 "semantic_completeness_complete": review["complete"],

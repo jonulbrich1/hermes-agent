@@ -270,6 +270,11 @@ async def test_self_contained_duck_puzzle_uses_organic_processor_without_growth(
         assert response.metadata["sources"] == []
         assert response.metadata["semantic_completeness_complete"] is True
         assert response.metadata["reasoning_trace"]["model"]["minimal_model"] is True
+        assert response.metadata["processor_version"] == "0.11.0-rc1"
+        assert response.metadata["v7_seed"]["experience_count"] == 930_838
+        assert response.metadata["presenter_packet"]["verified"] is True
+        assert response.metadata["presenter_packet"]["answer"] == 3
+        assert response.metadata["thought_policy"]["direct_tool_access"] is False
         assert runtime.core.system.db.counts()["planner_outcomes"] == 1
         assert runtime.core.system.db.counts()["core_learning_events"] == 1
         assert runtime.core.system.db.counts()["processing_episodes"] == 1
@@ -289,6 +294,8 @@ async def test_self_contained_arithmetic_uses_processor_without_growth(tmp_path)
         assert response.metadata["processor_operators"] == ["EVALUATE_BOUNDED_EXPRESSION"]
         assert response.metadata["sources"] == []
         assert response.metadata["semantic_completeness_complete"] is True
+        assert response.metadata["presenter_packet"]["verified"] is True
+        assert response.metadata["presenter_packet"]["answer"] == 2
     finally:
         _close(runtime)
 

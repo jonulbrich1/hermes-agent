@@ -123,6 +123,7 @@ def _organic_handoff(user_text: str) -> dict:
                 "semantic_interface_completeness"
             ),
             "hard_blocked": metadata.get("hard_blocked"),
+            "presenter_packet": metadata.get("presenter_packet"),
         },
     }
 
@@ -202,6 +203,7 @@ Hard rules:
 - For a non-conversation turn before an Organic tool has run, call the available Organic tool. For `organic_reason`, translate closed-world premises into its documented structure without calculating the answer yourself.
 - A structural translation is an untrusted proposal. Preserve the user's equations exactly; Organic owns solving, constraint checks, reward, and pathway promotion.
 - After an Organic tool result is present, present only that result. Do not solve the request again or add a new conclusion.
+- A presenter_packet is the authoritative result boundary. Never recompute, rejudge, replace, or contradict it. If verified=false, do not invent an answer.
 - The shared runtime owns completeness checks and any additional authorized tool loop.
 - If the request depends on unresolved context, resolve the referent from conversation context or ask for clarification. Never web-search a meaningless literal query such as "why is it?".
 - Present grounded Organic results naturally after the required Organic tool path has executed.
